@@ -1,0 +1,17 @@
+numpy==1.18.2
+pandas==0.25.1
+dash==1.9.1
+dash-bootstrap-components==0.9.1
+dash-core-components==1.8.1
+dash-html-components==1.0.2
+dash-renderer==1.2.4
+Flask==1.1.1
+Flask-Compress==1.4.0
+gunicorn==20.0.4
+imageio==2.6.0
+imageio-ffmpeg==0.4.1
+matplotlib==3.2.1
+pathlib==1.0.1
+pathlib2==2.3.5
+plotly==4.5.2
+seaborn==0.9.0
