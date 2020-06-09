@@ -22,10 +22,10 @@ enddate <- df$enddate[1]                     # Date of last observation + 30 day
 daily <- df$daily                            # Vector of observations
 
 # Smooth data with 7-day MA
-library(zoo)  
-tempdaily <- rollmean(daily, 5, na.pad = TRUE, align = "right")
-tempdaily[is.na(tempdaily)] = 0
-daily <- tempdaily
+#library(zoo)  
+#tempdaily <- rollmean(daily, 5, na.pad = TRUE, align = "right")
+#tempdaily[is.na(tempdaily)] = 0
+#daily <- tempdaily
 
 write(case, stdout())
 write(N, stdout())
@@ -53,12 +53,6 @@ write("R libraries loaded successfully", stdout())
 # There are two E and I boxes, the reasons for which I
 # can guess at but it's not my model so I won't :-)
 
-# V2 ---
-# parameters for error calculation
-report_err <- 0.2
-model_err <- 0.05
-# V2 ---
-        
 centile <- function(data,cent){
   len <- dim(data)[2] #length of series
   num <- dim(data)[1]
@@ -93,9 +87,7 @@ dead <- function(infectious,death,infectious_period){
   deadout  <- 0*infectious #empty array of correct size
 	# parameters deduced from Ferguson except changing their mean of 18.8 to 15 for somewhat subjective reasons. If you want to replicate their function just change the 15 back to 18.8
 	sh=4.9
-#	sc=15/sh # V1
-	sc=17.8/sh # V2
-  	
+	sc=15/sh
 	death_gam <- dgamma((0:60),scale=sc,shape=sh)
 	death_gam <- death_gam/sum(death_gam)
 	death_rev<- rev(death_gam)
@@ -140,15 +132,11 @@ modelcost <- function(params,obs){
 	i0 <- max(0.,min(exp(params[3]),.01)) #bound with 0. and 0.01 NB this one is logarithmic!
 	death <- max(0.001,min(params[4],0.05)) #bound with 0.1 and 5%
     R0 <- max(1.,min(params[5],10)) #bound with 0.1 and 10 also not less than 1 in initial segment
-#    Rt <- max(0.1,min(params[6],10)) #bound with 0.1 and 10 # V1
-    Rt <- max(0.01,min(params[6],10)) #bound with 0.01 and 10 # V2
+    Rt <- max(0.1,min(params[6],10)) #bound with 0.1 and 10
 	# prior mean for parameters in order
-#    par_pri <- c(4.,2,-15,0.0075,3,1.) # V1
-    par_pri <- c(4.5,2.5,-15,0.0075,3,1.) # V2
+    par_pri <- c(4.,2,-15,0.0075,3,1.)
 	# prior sd
-#    par_sd <- c(.5,0.1,15,0.0003,2,.5) # V1
-    par_sd <- c(.5,0.5,15,0.00125,1,.5) # V2
-        		
+    par_sd <- c(.5,0.1,15,0.0003,2,.5)
 	# set up the rundeck
     # total length of run is hard-wired here, doesn't need to be too long until we get a lot of obs
     enddate <- dates_n[length(dates_n)] + 28 # index of last observation + 4 weeks  
@@ -159,20 +147,10 @@ modelcost <- function(params,obs){
 	infectout  <- rowSums(outs[,5:6]) #calculated total infected over time
 	deadout <- dead(infectout,death,infectious_period) #daily deaths
     cumdeadout = cumsum(deadout) #convenient to have cumulative deaths
-
     # Cost function = log likelihood  
     # need to make sure that zero/low deaths doesn't give a huge error in log space, so I've imposed lower bounds on both model and data
     # note even thoguh I have modified data to eliminate missed days there can still some occasional zeros in the early stages of the epidemic   
-
-#    data_cost <- -0.5*sum(((log((pmax(N*deadout[obs[,1]],0.1)))-log(pmax(obs[,2],.1)))^2)/obs[,3]^2) # V1
-
-    # V2 ---
-    pdead <- pmax(N*deadout[obs[,1]],0.5) #predicted dead on the obs days truncated at 0.1
-    obs_err_sq <- report_err^2 + (log(1+((sqrt(abs(pdead))+1))/pdead))^2 + (model_err*(tail(obs[,1],1)-obs[,1]))^2 
-    dett <-  prod(obs_err_sq) 
-    data_cost <- -0.5*log(dett) -0.5*sum(((log(pdead)-log(pmax(obs[,2],.5)))^2)/obs_err_sq)
-    # V2 ---
-
+    data_cost <- -0.5*sum(((log((pmax(N*deadout[obs[,1]],0.1)))-log(pmax(obs[,2],.1)))^2)/obs[,3]^2)
     pri_cost <- -0.5*sum((params-par_pri)^2/par_sd^2)      
 	cost <- data_cost + pri_cost
 	return(cost)
@@ -180,8 +158,7 @@ modelcost <- function(params,obs){
 
 # input the data and a touch of pre-processing depending on the case
 # start point for MCMC calculation also set here...can be anything so long as it's not too bad. Prior mean is usually a sensible choice.
-#par_pri <- c(4.,2,-15,0.0075,3,1.) # V1
-par_pri <- c(4.,2,-15,0.007,3,1.) # V2
+par_pri <- c(4.,2,-15,0.0075,3,1.)
 
 #dates <- seq(as.Date(initdate, format="%y-%m-%d"), by=1, length.out=length(daily))
 #dates_n <- as.numeric(as.Date(dates, format="%d/%m/%y")-as.Date(startdate, format="%d/%m/%y"))
@@ -201,29 +178,29 @@ obs[obsfix+1,2] <- obs[obsfix+1,2] - delta_2
 obs[obsfix-1,2] <- obs[obsfix-1,2] -delta_1
 
 # SET k HERE to withold final k obs for validation e.g. k=7 is the last week of data
-# k <- 0
-# obs_extra <- NULL
+k <- 0
+obs_extra <- NULL
 
-# if(k>0){
-# 	num_obs <- length(obs[,2])
-#	obs_extra <- obs[(num_obs-(k-1)):num_obs,]
-#	obs=obs[1:(num_obs-k),]
-#}
+if(k>0){
+	num_obs <- length(obs[,2])
+	obs_extra <- obs[(num_obs-(k-1)):num_obs,]
+	obs=obs[1:(num_obs-k),]
+}
 
 # Setting the observational error...this is quite important.
 # theory is to have a minimum of x% obs error and also a model error of y% per day
 # I have set at 20% and 3%. Actually this is done in log terms so exp(0.2) ~ 22% etc.
-# obs[,3] <- rev(sqrt(0.2^2 + (0.03*(0:(length(obs[,3])-1)))^2))
+obs[,3] <- rev(sqrt(0.2^2 + (0.03*(0:(length(obs[,3])-1)))^2))
 
 write("obs vector constructed successfully", stdout())
 
 # This is the  bit that actually does the work...calls the mcmc routine
 # this should be a decent production-level length
 # use these lines for shorter tests when setting up changes...saves a bit of time
-#burn <- 1000
-#runlength <- 1000
-burn <- 3000
-runlength <- 5000
+#burn<-1000
+#runlength<-1000
+burn<-3000
+runlength<-5000
 
 set.seed(42) #reproducibility!
 
@@ -281,7 +258,7 @@ run_ensemble <- function(post.samp,n_ens,modelrunlen){
 		infectious_period <- max(.5,min(params[2],10)) #bound with 0.1 and 10
 		i0 <- max(0.,min(exp(params[3]),.01)) #bound with 0. and 10
 		death <- max(0.001,min(params[4],0.05)) #bound with 0.1 and 5%  
-		R0 <- max(1.,min(params[5],10)) #bound with 1 and 10 not less than 1
+		R0 <- max(1.,min(params[5],10)) #bound with 0.1 and 10 not less than 1
 		Rt <- max(0.1,min(params[6],10)) #bound with 0.1 and 10
 		#set up the rundeck
 		rundeck <- data.frame(dy = c(as.numeric(as.Date(interventiondate)-as.Date(startdate)), modelrunlen), R0 = c(R0,Rt))
