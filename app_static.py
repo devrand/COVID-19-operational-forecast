@@ -20,7 +20,7 @@ run_plots = True
 plot_intervention = True
 plot_total_error = True
 plot_raw_obs = True
-plot_mcmc = False
+plot_mcmc = True
 
 #value = 'Bangladesh'
 #value = 'Brazil'
