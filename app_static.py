@@ -15,7 +15,7 @@
 # SETTINGS
 # ========================================================================
 run_smoother = True
-run_forecast = True
+run_forecast = False
 run_plots = True
 plot_intervention = True
 plot_total_error = True
@@ -25,7 +25,7 @@ plot_mcmc = False
 #value = 'Bangladesh'
 #value = 'Brazil'
 #value = 'Greece'
-value = 'India'
+#value = 'India'
 #value = 'Iran'
 #value = 'Italy'
 #value = 'Mexico'
@@ -33,7 +33,7 @@ value = 'India'
 #value = 'Russia'
 #value = 'Spain'
 #value = 'Saudi Arabia'
-#value = 'United Kingdom'
+value = 'United Kingdom'
 #value = 'US'
 
 # FAILING:
@@ -430,14 +430,14 @@ if plot_intervention:
                 dict(
                     text = "{0:.0f}".format((pd.to_datetime(peakdate)-pd.to_datetime(interventiondate)).days) + ' days',                    
                     x = pd.to_datetime(peakdate) + pd.to_timedelta(1, unit='D'),
-                    y = ypeak, 
+                    y = (ymax-ymin)/4, 
                     xanchor = 'left',
                     yanchor = 'middle',
                     showarrow = False,
                 ),                         
                 dict(
                     x = peakdate, 
-                    y = ypeak,
+                    y = (ymax-ymin)/4,
                     xref = "x", yref = "y1",
                     axref = "x", ayref = "y1",
                     text = "",
@@ -446,16 +446,16 @@ if plot_intervention:
                     arrowwidth = 2,
                     arrowcolor = 'purple',
                     ax = interventiondate,
-                    ay = (ymax-ymin)/2,
+                    ay = (ymax-ymin)/4,
                     ),
         ],    
-        legend_orientation="v", legend=dict(x=0.01, y=0.2, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+        legend_orientation="v", legend=dict(x=0.72, y=0.95, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
         margin=dict(r=60, l=60, b=60, t=20),                  
     )
 else:
     layout = go.Layout(            
         yaxis=dict(title='Daily', range=[ymin, ymax]),
-        legend_orientation="v", legend=dict(x=0.01, y=0.2, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+        legend_orientation="v", legend=dict(x=0.72, y=0.95, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
         margin=dict(r=60, l=60, b=60, t=20),                  
     )
     
@@ -524,15 +524,7 @@ if plot_intervention:
                     showarrow = False,
                 ),  
                 dict(
-                    text = "{0:.0f}".format(yintervention),                    
-                    x = pd.to_datetime(peakdate) + pd.to_timedelta(1, unit='D'),
-                    y = yintervention, 
-                    xanchor = 'left',
-                    yanchor = 'middle',
-                    showarrow = False,
-                ),  
-                dict(
-                    text = "{0:.0f}".format((pd.to_datetime(peakdate)-pd.to_datetime(interventiondate)).days) + ' days',                    
+                    text = "{0:.0f}".format((pd.to_datetime(peakdate) - pd.to_datetime(interventiondate)).days) + ' days',                    
                     x = pd.to_datetime(peakdate) + pd.to_timedelta(1, unit='D'),
                     y = ypeak, 
                     xanchor = 'left',
@@ -553,13 +545,13 @@ if plot_intervention:
                     ay = ypeak,                    
                     ),
         ],            
-        legend_orientation="v", legend=dict(x=0.01, y=0.2, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+        legend_orientation="v", legend=dict(x=0.72, y=0.05, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
         margin=dict(r=60, l=60, b=60, t=20),                  
     )
 else:
     layout = go.Layout(
         yaxis=dict(title='Cumulative', range=[ymin, ymax]),                           
-        legend_orientation="v", legend=dict(x=0.01, y=0.2, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+        legend_orientation="v", legend=dict(x=0.72, y=0.05, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
         margin=dict(r=60, l=60, b=60, t=20),                  
     )
         
@@ -669,6 +661,14 @@ if plot_intervention:
                        marker=dict(size=12, line=dict(width=0.5), color="grey"),
                        name="Peak",
                        yaxis='y1'),                      
+            go.Scatter(x=[stopdate, stopdate], 
+                       y=[ymin, ymax],
+                       mode="lines",
+                       legendgroup="a",
+                       showlegend=False,
+                       marker=dict(size=12, line=dict(width=0.5), color="grey"),
+                       name="",
+                       yaxis='y1'),                      
     ]
 else:
     data_intervention = []
@@ -680,7 +680,7 @@ if plot_intervention:
             title = {'text' : 'Initialised on ' + stopdate + ' (' + str(pd.to_timedelta(pd.to_datetime(stopdate) - pd.to_datetime(interventiondate), unit='D').days) + ' days after intervention)', 'x': 0.5, 'y': 1.0},                
             yaxis=dict(title='Daily', range=[ymin, np.log10( ymax ) ]),     
             yaxis_type="log",
-            legend_orientation="v", legend=dict(x=.7, y=0.3, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+            legend_orientation="v", legend=dict(x=.72, y=0.05, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
             annotations = [
                 dict(
                     text = 'R0 <br>' + "{0:.2f}".format(r0_mean) + '±' + "{0:.2f}".format(r0_sd),
@@ -705,10 +705,10 @@ if plot_intervention:
                         + '-' 
                         + "{0:.0f}".format(upcent_daily[dates_all>stopdate][0])
                         +')',
-                    x = pd.to_datetime(stopdate) + pd.to_timedelta(1, unit='D'),
-                    y = np.log10(1), 
-                    xanchor = 'left',
-                    yanchor = 'bottom',
+                    x = pd.to_datetime(stopdate) - pd.to_timedelta(1, unit='D'),
+                    y = np.log10( ymax ), 
+                    xanchor = 'right',
+                    yanchor = 'top',
                     showarrow = False,
                 ),   
             ],           
@@ -719,7 +719,7 @@ else:
             title = {'text' : 'Initialised on ' + stopdate + ' (' + str(pd.to_timedelta(pd.to_datetime(stopdate) - pd.to_datetime(interventiondate), unit='D').days) + ' days after intervention)', 'x': 0.5, 'y': 1.0},                
             yaxis=dict(title='Daily', range=[ymin, np.log10( ymax ) ], which="major"),     
             yaxis_type="log",
-            legend_orientation="v", legend=dict(x=.7, y=0.3, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+            legend_orientation="v", legend=dict(x=.72, y=0.05, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
             annotations = [
                 dict(
                     text = 'Tomorrow <br>' + "{0:.0f}".format(midcent_daily[dates_all>dates[-1]][0])
@@ -728,10 +728,10 @@ else:
                         + '-' 
                         + "{0:.0f}".format(upcent_daily[dates_all>stopdate][0])
                         +')',
-                    x = pd.to_datetime(stopdate) + pd.to_timedelta(1, unit='D'),
-                    y = np.log10(1), 
-                    xanchor = 'left',
-                    yanchor = 'bottom',
+                    x = pd.to_datetime(stopdate) - pd.to_timedelta(1, unit='D'),
+                    y = np.log10( ymax ), 
+                    xanchor = 'right',
+                    yanchor = 'top',
                     showarrow = False,
                 ),                            
             ],           
@@ -839,6 +839,14 @@ if plot_intervention:
                        marker=dict(size=12, line=dict(width=0.5), color="grey"),
                        name="Peak",
                        yaxis='y1'),                                              
+            go.Scatter(x=[stopdate, stopdate], 
+                       y=[ymin, ymax],
+                       mode="lines",
+                       legendgroup="a",
+                       showlegend=False,
+                       marker=dict(size=12, line=dict(width=0.5), color="grey"),
+                       name="",
+                       yaxis='y1'),                                              
     ]
 else:     
     data_intervention = []
@@ -850,7 +858,7 @@ if plot_intervention:
             title = {'text' : 'Initialised on ' + stopdate + ' (' + str(pd.to_timedelta(pd.to_datetime(stopdate) - pd.to_datetime(interventiondate), unit='D').days) + ' days after intervention)', 'x': 0.5, 'y': 1.0},                
             yaxis=dict(title='Cumulative', range=[ymin, np.log10( ymax )]),     
             yaxis_type="log",
-            legend_orientation="v", legend=dict(x=.7, y=0.3, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+            legend_orientation="v", legend=dict(x=.72, y=0.05, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
             annotations = [
                 dict(
                     text = 'R0 <br>' + "{0:.2f}".format(r0_mean) + '±' + "{0:.2f}".format(r0_sd),                    
@@ -875,10 +883,10 @@ if plot_intervention:
                         + '-' 
                         + "{0:.0f}".format(midcent_total[dates_all>stopdate][0] + upcent_daily[dates_all>stopdate][0])
                         +')',
-                    x = pd.to_datetime(stopdate) + pd.to_timedelta(1, unit='D'),
-                    y = np.log10(1), 
-                    xanchor = 'left',
-                    yanchor = 'bottom',
+                    x = pd.to_datetime(stopdate) - pd.to_timedelta(1, unit='D'),
+                    y = np.log10( ymax ), 
+                    xanchor = 'right',
+                    yanchor = 'top',
                     showarrow = False,
                 ),   
             ],           
@@ -889,7 +897,7 @@ else:
             title = {'text' : 'Initialised on ' + stopdate + ' (' + str(pd.to_timedelta(pd.to_datetime(stopdate) - pd.to_datetime(interventiondate), unit='D').days) + ' days after intervention)', 'x': 0.5, 'y': 1.0},                
             yaxis=dict(title='Cumulative', range=[ymin, np.log10( ymax )]),     
             yaxis_type="log",
-            legend_orientation="v", legend=dict(x=.7, y=0.3, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+            legend_orientation="v", legend=dict(x=.72, y=0.05, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
             annotations = [
                 dict(
                     text = 'Tomorrow <br>' + "{0:.0f}".format(midcent_total[dates_all>stopdate][0])
