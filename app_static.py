@@ -25,7 +25,7 @@ plot_mcmc = False
 #value = 'Bangladesh'
 #value = 'Brazil'
 #value = 'Greece'
-#value = 'India'
+value = 'India'
 #value = 'Iran'
 #value = 'Italy'
 #value = 'Mexico'
@@ -33,7 +33,7 @@ plot_mcmc = False
 #value = 'Russia'
 #value = 'Spain'
 #value = 'Saudi Arabia'
-value = 'United Kingdom'
+#value = 'United Kingdom'
 #value = 'US'
 
 # FAILING:
@@ -124,8 +124,8 @@ def update_status(dp,dl,df,value):
         country = df[(df['Country/Region'] == value) & (pd.isnull(df['Province/State']))].T[4:] 
 
     if value == 'United Kingdom':
-        backshift = pd.to_datetime(interventiondate) - pd.to_timedelta(pd.np.ceil(3), unit="D") # 2020-03-21
-#        interventiondate = str(int(backshift.year)) + "-" + str(int(backshift.month)) + "-" + str(int(backshift.day)) 
+        backshift = pd.to_datetime(interventiondate) - pd.to_timedelta(pd.np.ceil(4), unit="D") # 2020-03-21
+        interventiondate = str(int(backshift.year)) + "-" + str(int(backshift.month)) + "-" + str(int(backshift.day)) 
     if value == 'US':
         backshift = pd.to_datetime(interventiondate) - pd.to_timedelta(pd.np.ceil(12), unit="D") # 2020-03-22
         interventiondate = str(int(backshift.year)) + "-" + str(int(backshift.month)) + "-" + str(int(backshift.day)) 
@@ -137,15 +137,15 @@ def update_status(dp,dl,df,value):
     daily = daily.astype('int')               # 1st case onwards counts - integers
     dates = daily.index                       # 1st case onwards dates
 
-    npre = 28
-    npad = 14
-    nforecast = 28
-    
+    npre = 28                                 # Hindcast spin-up window
+    npad = 14                                 # Pad with 2 weeks of zeros
+    nforecast = 28                            # Forecast window
+        
     startdatestamp = pd.to_datetime(dates[0]) - pd.to_timedelta(npre, unit="D")
     initdatestamp = pd.to_datetime(dates[0]) - pd.to_timedelta(npad, unit="D")
     casedatestamp = pd.to_datetime(dates[0])
     stopdatestamp = pd.to_datetime(dates[-1])
-    enddatestamp = pd.to_datetime(dates[-1]) + pd.to_timedelta(nforecast, unit="D")
+    enddatestamp = pd.to_datetime(dates[-1]) + pd.to_timedelta(nforecast, unit="D")        
     startdate = str(int(startdatestamp.year)) + "-" + str(int(startdatestamp.month)) + "-" + str(int(startdatestamp.day)) 
     initdate = str(int(initdatestamp.year)) + "-" + str(int(initdatestamp.month)) + "-" + str(int(initdatestamp.day)) 
     casedate = str(int(casedatestamp.year)) + "-" + str(int(casedatestamp.month)) + "-" + str(int(casedatestamp.day)) 
@@ -321,7 +321,7 @@ lowcent_daily = N*np.array([quantile(mcmc_daily[:,i],0.05) for i in range(len(in
 midcent_daily = N*np.array([quantile(mcmc_daily[:,i],0.5) for i in range(len(interval))])
 upcent_daily = N*np.array([quantile(mcmc_daily[:,i],0.95) for i in range(len(interval))])
 # V2---
-report_err = 0.2
+report_err = 0.05
 model_err = 0.05
 #total_error = np.sqrt(.2**2 + (0.03*abs(interval_end - nforecast - interval))**2) # V1
 #total_error <- sqrt((log((midcent+sqrt(midcent))/midcent))^2+(report_err)^2 + (model_err*pmax(interval-nowdate,0))^2) # V2
@@ -384,34 +384,6 @@ data = [
                        marker=dict(size=5, opacity=0.5), 
                        name='3-day EWA', 
                        yaxis='y1'),
-#            go.Scatter(x=dates_all[dates_all>stopdate], y=midcent_daily[dates_all>stopdate], 
-            go.Scatter(x=dates_all, y=upcent_daily, 
-                       mode='lines', 
-                       fill=None,
-                       line=dict(width=1.0, color='navajowhite'),
-                       name='95% centile',      
-                       showlegend=False,
-                       yaxis='y1'),                       
-            go.Scatter(x=dates_all, y=lowcent_daily, 
-                       mode='lines', 
-                       fill='tonexty',
-                       line=dict(width=1.0, color='navajowhite'),
-                       name='5-95% range',      
-                       showlegend=True,
-                       yaxis='y1'),                       
-            go.Scatter(x=dates_all, y=lowcent_daily, 
-                       mode='lines', 
-                       fill=None,
-                       line=dict(width=1.0, color='navajowhite'),
-                       name='5% centile',      
-                       showlegend=False,
-                       yaxis='y1'),                       
-            go.Scatter(x=dates_all, y=midcent_daily, 
-                       mode='lines', 
-                       line=dict(width=3.0, color='red'),
-                       name='Hindcast/forecast',
-                       showlegend=True,
-                       yaxis='y1'),                       
 ]
             
 if plot_intervention:
@@ -474,7 +446,7 @@ if plot_intervention:
                     arrowwidth = 2,
                     arrowcolor = 'purple',
                     ax = interventiondate,
-                    ay = ypeak,
+                    ay = (ymax-ymin)/2,
                     ),
         ],    
         legend_orientation="v", legend=dict(x=0.01, y=0.2, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),

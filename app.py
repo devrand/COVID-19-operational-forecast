@@ -4,8 +4,8 @@
 #-----------------------------------------------------------------------
 # PROGRAM: app.py
 #-----------------------------------------------------------------------
-# Version 0.5
-# 30 May, 2020
+# Version 0.6
+# 8 June, 2020
 # Dr Michael Taylor
 # https://patternizer.github.io
 # patternizer AT gmail DOT com
@@ -45,6 +45,18 @@ def nearest_power_of_10(n):
     x = int(10**np.ceil(np.log10(n)))
     return x
 
+def smoother(vec):
+    newvec = np.ones(len(vec))
+    weekly = np.zeros(7)
+    for i in np.arange(0,7):
+        dy = np.arange(0,int(np.ceil((len(vec)-i)/7)))
+        weekly[i] = np.mean(vec[dy*7+i])
+    weeklymean = np.mean(weekly)    
+    for i in np.arange(0,7):
+        dy = np.arange(0,int(np.ceil((len(vec)-i)/7)))
+        newvec[dy*7+i] = vec[dy*7+i]*np.mean(weekly)/weekly[i]
+    return newvec
+
 def update_status(dp,dl,df,value):
     # Handle inconsistencies in population, intervention and daily loss data sets
     if value == 'US':
@@ -72,6 +84,13 @@ def update_status(dp,dl,df,value):
         interventiondate = dl[dl['country_name']==value]['date'].values[0]
         interventionlevel = dl[dl['country_name']==value]['intervention'].values[0]
 
+    if value == 'United Kingdom':
+        backshift = pd.to_datetime(interventiondate) - pd.to_timedelta(pd.np.ceil(4), unit="D") # 2020-03-21
+        interventiondate = str(int(backshift.year)) + "-" + str(int(backshift.month)) + "-" + str(int(backshift.day)) 
+    if value == 'US':
+        backshift = pd.to_datetime(interventiondate) - pd.to_timedelta(pd.np.ceil(12), unit="D") # 2020-03-22
+        interventiondate = str(int(backshift.year)) + "-" + str(int(backshift.month)) + "-" + str(int(backshift.day)) 
+
     if value == 'Australia':
         country = df[df['Country/Region'] == value].T[4:]
     elif value == 'Canada':
@@ -88,18 +107,22 @@ def update_status(dp,dl,df,value):
     daily = daily.astype('int')               # 1st case onwards counts - integers
     dates = daily.index                       # 1st case onwards dates
 
-    startdatestamp = pd.to_datetime(dates[0]) - pd.to_timedelta(28, unit="D")
-    initdatestamp = pd.to_datetime(dates[0]) - pd.to_timedelta(14, unit="D")
+    npre = 28                                 # Hindcast spin-up window
+    npad = 14                                 # Pad with 2 weeks of zeros
+    nforecast = 28                            # Forecast window
+    
+    startdatestamp = pd.to_datetime(dates[0]) - pd.to_timedelta(npre, unit="D")
+    initdatestamp = pd.to_datetime(dates[0]) - pd.to_timedelta(npad, unit="D")
     casedatestamp = pd.to_datetime(dates[0])
     stopdatestamp = pd.to_datetime(dates[-1])
-    enddatestamp = pd.to_datetime(dates[-1]) + pd.to_timedelta(28, unit="D")
+    enddatestamp = pd.to_datetime(dates[-1]) + pd.to_timedelta(nforecast, unit="D")        
     startdate = str(int(startdatestamp.year)) + "-" + str(int(startdatestamp.month)) + "-" + str(int(startdatestamp.day)) 
     initdate = str(int(initdatestamp.year)) + "-" + str(int(initdatestamp.month)) + "-" + str(int(initdatestamp.day)) 
     casedate = str(int(casedatestamp.year)) + "-" + str(int(casedatestamp.month)) + "-" + str(int(casedatestamp.day)) 
     stopdate = str(int(stopdatestamp.year)) + "-" + str(int(stopdatestamp.month)) + "-" + str(int(stopdatestamp.day)) 
     enddate = str(int(enddatestamp.year)) + "-" + str(int(enddatestamp.month)) + "-" + str(int(enddatestamp.day)) 
     dates_pad = pd.date_range(initdatestamp, dates[-1])
-    daily_pad = np.concatenate([np.zeros(14).astype('int'), daily.values])
+    raw_pad = np.concatenate([np.zeros(npad).astype('int'), daily.values])
 
     dt = pd.DataFrame({'case': value, 
                        'N': population, 
@@ -107,18 +130,20 @@ def update_status(dp,dl,df,value):
                        'initdate': initdate, 
                        'casedate': casedate, 
                        'interventiondate': interventiondate, 
-                       'interventionlevel': interventionlevel, 
+                       'interventionlevel': interventionlevel,                        
                        'stopdate': stopdate, 
-                       'enddate': enddate, 
-                       'dates': dates_pad, 
-                       'daily': daily_pad})    
-    dt['ma7'] = dt['daily'].rolling(7).mean().fillna(0).astype('int')
-    dt['cumulative'] = dt['daily'].cumsum()
-    dt['ma7_cumulative'] = dt['cumulative'].rolling(7).mean().fillna(0).astype('int')
+                       'enddate': enddate,
+                       'dates': dates_pad,                        
+                       'raw': raw_pad})    
 
-    ma7 = dt[dt.ma7 == max(dt.ma7)]['dates']
-    peakidx = ma7[ma7 == max(ma7)].index
-    peakdatestamp = ma7[ma7.index.values[0]]
+#   dt['daily'] = smoother(dt.raw).astype('int')                    # Regularisation (James Annan)
+#   dt['daily'] = dt.raw.rolling(7).mean().fillna(0).astype('int')  # Pandas rolling mean
+    dt['daily'] = dt.raw.iloc[:].ewm(span=3,adjust=False).mean()    # Exponential weighted mean (3)
+    dt['cumulative'] = dt['daily'].cumsum()    
+    dt['raw_cumulative'] = dt['raw'].cumsum()    
+    ma = dt[dt.daily == max(dt.daily)]['dates']
+    peakidx = ma[ma == max(ma)].index    
+    peakdatestamp = ma[ma.index.values[0]]    
     peakdate = str(int(peakdatestamp.year)) + "-" + str(int(peakdatestamp.month)) + "-" + str(int(peakdatestamp.day)) 
     dt['peakdate'] = peakdate
 
@@ -368,19 +393,20 @@ def update_input_graph(value):
     
     ymin = min(dt[dt.cumulative>0]['daily'])
     ymax = max(dt[dt.cumulative>0]['daily'])
-    yintervention = dt[dt.dates==interventiondate]['ma7'].values[0]  
+    yintervention = dt[dt.dates==interventiondate]['daily'].values[0]  
     ypeak = dt[dt.dates==peakdate]['daily'].values[0]  
 
     data = [            
-            go.Bar(y=dt[dt.cumulative>0]['daily'], x=dt[dt.cumulative>0]['dates'], 
+            go.Bar(y=dt[dt.cumulative>0]['raw'], x=dt[dt.cumulative>0]['dates'], 
                    marker_color='lightgrey', 
                    name='Daily deaths', 
                    yaxis='y1'),
-            go.Scatter(x=dt[dt.cumulative>0]['dates'], y=dt[dt.cumulative>0]['ma7'], 
+            go.Scatter(x=dt[dt.cumulative>0]['dates'], y=dt[dt.cumulative>0]['daily'], 
                        mode='lines+markers', 
                        line=dict(width=1.0,color='red'),
                        marker=dict(size=5, opacity=0.5), 
-                       name='7-day MA', yaxis='y1'),
+                       name='3-day EWA', 
+                       yaxis='y1'),
     ]
 
     data_intervention = [
@@ -401,6 +427,7 @@ def update_input_graph(value):
                        name="Peak",
                        yaxis='y1'),                
     ]
+
     data = data + data_intervention
 
     layout = go.Layout(            
@@ -425,14 +452,14 @@ def update_input_graph(value):
                 dict(
                     text = "{0:.0f}".format((pd.to_datetime(peakdate)-pd.to_datetime(interventiondate)).days) + ' days',                    
                     x = pd.to_datetime(peakdate) + pd.to_timedelta(1, unit='D'),
-                    y = ypeak, 
+                    y = (ymax-ymin)/4, 
                     xanchor = 'left',
                     yanchor = 'middle',
                     showarrow = False,
                 ),  
                 dict(
                     x = peakdate, 
-                    y = ypeak,
+                    y = (ymax-ymin)/4,
                     xref = "x", yref = "y1",
                     axref = "x", ayref = "y1",
                     text = "",
@@ -441,7 +468,7 @@ def update_input_graph(value):
                     arrowwidth = 2,
                     arrowcolor = 'purple',
                     ax = interventiondate,
-                    ay = ypeak,
+                    ay = (ymax-ymin)/4,
                     ),
         ],    
         legend_orientation="v", legend=dict(x=.72, y=0.95, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
@@ -465,13 +492,17 @@ def update_input_graph(value):
     ymax = max(dt[dt.cumulative>0]['cumulative'])
     yintervention = dt[dt.dates==interventiondate]['cumulative'].values[0]  
     ypeak = dt[dt.dates==peakdate]['cumulative'].values[0]  
-
+    
     data = [            
+            go.Bar(y=dt[dt.cumulative>0]['raw_cumulative'], x=dt[dt.cumulative>0]['dates'], 
+                   marker_color='lightgrey', 
+                   name='Total deaths', 
+                   yaxis='y1'),
             go.Scatter(x=dt[dt.cumulative>0]['dates'], y=dt[dt.cumulative>0]['cumulative'], 
                        mode='lines+markers', 
                        line=dict(width=1.0,color='red'), 
                        marker=dict(size=5, opacity=0.8),
-                       name='Total deaths', 
+                       name='3-day EWA', 
                        yaxis='y1'),                      
     ]
     
@@ -536,8 +567,8 @@ def update_input_graph(value):
                     ay = ypeak,
                     ),
         ],            
-        legend_orientation="v", legend=dict(x=.72, y=0.35, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
-        margin=dict(r=60, l=60, b=60, t=60),                  
+        legend_orientation="v", legend=dict(x=.72, y=0.05, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+        margin=dict(r=60, l=60, b=60, t=80),                  
     )
     
     return {'data': data, 'layout':layout} 
@@ -573,8 +604,8 @@ def update_forecast_button(n_clicks, value):
     if n_clicks == 1:
 #        filepath = pathlib.Path(__file__).resolve().parent        
 #        R_str = pathlib.Path(filepath, "covid-19_mcmc_prediction_public_executable").with_suffix(".R")        
-#        subprocess.Popen(['Rscript', '--vanilla', 'R_str'])
-        subprocess.call("C:\\Program Files\\R\\R-3.6.3\\bin\\Rscript --vanilla C:\\Users\\User\\Desktop\\REPOS\\COVID-19-operational-forecast\\covid-19_mcmc_prediction_public_executable.R")
+#        subprocess.call(['Rscript', '--vanilla', 'R_str'])
+        subprocess.call("C:\\Program Files\\R\\R-3.6.3\\bin\\Rscript --vanilla C:\\Users\\User\\Desktop\\REPOS\\COVID-19-operational-forecast\\GITHUB\\covid-19_mcmc_prediction_public_executable.R")
         return    
     else:    
         n_clicks = 0
@@ -588,14 +619,18 @@ def update_forecast_button(n_clicks, value):
 def update_output_graph(n_clicks, value):
 
         dt = update_status(dp,dl,df,value)
-        
+                                          
         N = dt.N[0]
         startdate = dt.startdate[0]
+        initdate = dt.initdate[0]
         casedate = dt.casedate[0]
         interventiondate = dt.interventiondate[0]
         peakdate = dt.peakdate[0]
         stopdate = dt.stopdate[0]
-                   
+        enddate = dt.enddate[0]
+        
+        nforecast = (pd.to_datetime(enddate)-pd.to_datetime(stopdate)).days        
+                                  
         #-----------------------------------------
         # I/O Python <--> R (NB filename mathcing)
         #-----------------------------------------
@@ -624,7 +659,7 @@ def update_output_graph(n_clicks, value):
         corr = post_samp.corr()
 
         interval_start = int(obs.values[:,0][0])
-        interval_end = int(obs.values[:,0][-1]) + 28
+        interval_end = int(obs.values[:,0][-1]) + nforecast
         interval = np.arange(interval_start, interval_end+1)  
         dates_all = pd.to_datetime(startdate) + pd.to_timedelta(interval, unit='D')
         
@@ -633,13 +668,11 @@ def update_output_graph(n_clicks, value):
         midcent_daily = N*np.array([quantile(mcmc_daily[:,i],0.5) for i in range(len(interval))])
         upcent_daily = N*np.array([quantile(mcmc_daily[:,i],0.95) for i in range(len(interval))])
 
-        # total_error = np.sqrt(.2**2 + (0.03*abs(interval_end - 28 - interval))**2) # V1
-        # V2---
         report_err = 0.2
         model_err = 0.05
+        #total_error = np.sqrt(.2**2 + (0.03*abs(interval_end - nforecast - interval))**2) # V1
         #total_error <- sqrt((log((midcent+sqrt(midcent))/midcent))^2+(report_err)^2 + (model_err*pmax(interval-nowdate,0))^2) # V2
-        total_error = np.sqrt((np.log((midcent_daily + np.sqrt(midcent_daily))/midcent_daily))**2+(report_err)**2 + (model_err*abs(interval_end - 28 - interval))**2) # V2
-        # V2---
+        total_error = np.sqrt((np.log((midcent_daily + np.sqrt(midcent_daily))/midcent_daily))**2 + (report_err)**2 + (model_err*abs(interval_end - nforecast - interval))**2) # V2
 
         up_log_daily = np.sqrt((total_error*1.64)**2 + (np.log(upcent_daily/midcent_daily))**2) #1.64 for 5-95% range
         low_log_daily = np.sqrt((total_error*1.64)**2 + (np.log(midcent_daily/lowcent_daily))**2)
@@ -655,53 +688,92 @@ def update_output_graph(n_clicks, value):
         upper_total = midcent_total*np.exp(up_log_total)
         lower_total = midcent_total*np.exp(-low_log_total)
         
+        # JDAnnan: 
+        # note as a matter of preference we include the model error term only for the future in the graphics,
+        # and the hindcast spread shows only ensemble spread and sampling/obs error. A debateable 
+        # decision but including model error here makes it look like we have a massive spread in the past,
+        # which is not the case. It could be the case that our model error term is a little large?      
+
+        upcent_daily[dates_all>stopdate] = upper_daily[dates_all>stopdate]
+        lowcent_daily[dates_all>stopdate] = lower_daily[dates_all>stopdate]
+        upcent_total[dates_all>stopdate] = upper_total[dates_all>stopdate]
+        lowcent_total[dates_all>stopdate] = lower_total[dates_all>stopdate]
+
+        upper_daily[dates_all<=stopdate] = upcent_daily[dates_all<=stopdate]
+        lower_daily[dates_all<=stopdate] = lowcent_daily[dates_all<=stopdate]
+        upper_total[dates_all<=stopdate] = upcent_total[dates_all<=stopdate]
+        lower_total[dates_all<=stopdate] = lowcent_total[dates_all<=stopdate]
+        
         # Plot forecast
 
         ymin = np.log10(0.2)        
         ymax = nearest_power_of_10(np.max(upper_daily))
-#        ymax = nearest_power_of_10(np.max(upcent_daily))
         yintervention = midcent_daily[dates_all==interventiondate][0]
         ypeak = midcent_daily[dates_all==peakdate][0]
         
         data = [        
-            go.Scatter(x=dates_all, y=upcent_daily, mode='lines', 
+            go.Scatter(x=dates_all, y=upcent_daily, 
+                       mode='lines', 
                        fill=None,
-                       line=dict(width=1.0, color='cyan'),
+                       line=dict(width=1.0, color='navajowhite'),
                        name='95% centile',      
                        showlegend=False,
                        yaxis='y1'),                       
-            go.Scatter(x=dates_all, y=lowcent_daily, mode='lines', 
+            go.Scatter(x=dates_all, y=lowcent_daily, 
+                       mode='lines', 
                        fill='tonexty',
-                       line=dict(width=1.0, color='cyan'),
+                       line=dict(width=1.0, color='navajowhite'),
                        name='5-95% range',      
                        showlegend=True,
                        yaxis='y1'),                       
-            go.Scatter(x=dt[dt.dates>=casedate]['dates'], y=dt[dt.dates>=casedate]['ma7'], 
-                       mode='markers', 
-                       marker=dict(size=5, symbol='circle-open', color='red'),
-                       name='7-day MA',
-                       showlegend=True,
+            go.Scatter(x=dates_all, y=lowcent_daily, 
+                       mode='lines', 
+                       fill=None,
+                       line=dict(width=1.0, color='navajowhite'),
+                       name='5% centile',      
+                       showlegend=False,
                        yaxis='y1'),                       
-            go.Scatter(x=dates_all, y=midcent_daily, mode='lines+markers', 
-                       line=dict(width=1.0,color='blue'),
-                       marker=dict(size=5, opacity=0.5), 
+            go.Scatter(x=dates_all, y=midcent_daily, 
+                       mode='lines', 
+                       line=dict(width=3.0, color='red'),
                        name='Hindcast/forecast',
                        showlegend=True,
                        yaxis='y1'),                       
+            go.Scatter(x=dt[dt.dates>=casedate]['dates'], y=dt[dt.dates>=casedate]['daily'], 
+                       mode='markers', 
+                       marker=dict(size=5, symbol='circle-open', color='red'),
+                       name='3-day EWA',
+                       showlegend=True,
+                       yaxis='y1'),     
+            go.Scatter(x=dt[dt.dates>=casedate]['dates'], y=dt[dt.dates>=casedate]['raw'].astype('int'), 
+                       mode='markers', 
+                       marker=dict(size=5, symbol='cross-thin-open', color='darkslategrey'), 
+                       name='Daily deaths',
+                       showlegend=True,
+                       yaxis='y1'),                                              
         ]
 
         data_total_error = [
-             go.Scatter(x=dates_all, y=upper_daily, mode='lines', 
+             go.Scatter(x=dates_all, y=upper_daily, 
+                       mode='lines', 
                        fill=None,
-                       line=dict(width=1.0, color='lightgrey'),
-                       name='total error (upper limit)',      
+                       line=dict(width=1.0, color='navajowhite'),
+                       name='forecast uncertainty (upper limit)',      
                        showlegend=False,
                        yaxis='y1'),                       
-             go.Scatter(x=dates_all, y=lower_daily, mode='lines', 
+             go.Scatter(x=dates_all, y=lower_daily, 
+                       mode='lines', 
                        fill='tonexty',
-                       line=dict(width=1.0, color='lightgrey'),
-                       name='total error',      
-                       showlegend=True,
+                       line=dict(width=1.0, color='navajowhite'),
+                       name='forecast uncertainty',      
+                       showlegend=False,
+                       yaxis='y1'),                       
+             go.Scatter(x=dates_all, y=lower_daily, 
+                       mode='lines', 
+                       fill=None,
+                       line=dict(width=1.0, color='navajowhite'),
+                       name='forecast uncertainty (lower limit)',      
+                       showlegend=False,
                        yaxis='y1'),                       
         ]
         data = data_total_error + data
@@ -738,7 +810,7 @@ def update_output_graph(n_clicks, value):
 #            title = {'text' : 'Initialised on ' + stopdate + ' (' + str(pd.to_timedelta(pd.to_datetime(stopdate) - pd.to_datetime(interventiondate), unit='D').days) + ' days after intervention)', 'x': 0.5, 'y': 1.0},                
             yaxis=dict(title='Daily', range=[np.log10(0.2), np.log10( ymax ) ]),     
             yaxis_type="log",
-            legend_orientation="v", legend=dict(x=.72, y=0.95, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+            legend_orientation="v", legend=dict(x=.72, y=0.05, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
             annotations = [
                 dict(
                     text = 'R0 <br>' + "{0:.2f}".format(r0_mean) + '±' + "{0:.2f}".format(r0_sd),
@@ -763,10 +835,10 @@ def update_output_graph(n_clicks, value):
                         + '-' 
                         + "{0:.0f}".format(upcent_daily[dates_all>stopdate][0])
                         +')',
-                    x = pd.to_datetime(stopdate) + pd.to_timedelta(1, unit='D'),
-                    y = np.log10(1), 
-                    xanchor = 'left',
-                    yanchor = 'bottom',
+                    x = pd.to_datetime(stopdate) - pd.to_timedelta(1, unit='D'),
+                    y = np.log10( ymax ), 
+                    xanchor = 'right',
+                    yanchor = 'top',
                     showarrow = False,
                 ),   
             ],           
@@ -783,13 +855,17 @@ def update_output_graph(n_clicks, value):
 def update_output_graph2(n_clicks, value):
 
         dt = update_status(dp,dl,df,value)
-                        
+                                    
         N = dt.N[0]
         startdate = dt.startdate[0]
+        initdate = dt.initdate[0]
         casedate = dt.casedate[0]
+        interventiondate = dt.interventiondate[0]
         peakdate = dt.peakdate[0]
         stopdate = dt.stopdate[0]
-        interventiondate = dt.interventiondate[0]
+        enddate = dt.enddate[0]
+        
+        nforecast = (pd.to_datetime(enddate)-pd.to_datetime(stopdate)).days
         
         #-----------------------------------------
         # I/O Python <--> R (NB filename mathcing)
@@ -819,7 +895,7 @@ def update_output_graph2(n_clicks, value):
         corr = post_samp.corr()
 
         interval_start = int(obs.values[:,0][0])
-        interval_end = int(obs.values[:,0][-1]) + 28
+        interval_end = int(obs.values[:,0][-1]) + nforecast
         interval = np.arange(interval_start, interval_end+1)  
         dates_all = pd.to_datetime(startdate) + pd.to_timedelta(interval, unit='D')
 
@@ -828,13 +904,11 @@ def update_output_graph2(n_clicks, value):
         midcent_daily = N*np.array([quantile(mcmc_daily[:,i],0.5) for i in range(len(interval))])
         upcent_daily = N*np.array([quantile(mcmc_daily[:,i],0.95) for i in range(len(interval))])
 
-        # total_error = np.sqrt(.2**2 + (0.03*abs(interval_end - 28 - interval))**2) # V1
-        # V2---
         report_err = 0.2
         model_err = 0.05
+        #total_error = np.sqrt(.2**2 + (0.03*abs(interval_end - nforecast - interval))**2) # V1
         #total_error <- sqrt((log((midcent+sqrt(midcent))/midcent))^2+(report_err)^2 + (model_err*pmax(interval-nowdate,0))^2) # V2
-        total_error = np.sqrt((np.log((midcent_daily + np.sqrt(midcent_daily))/midcent_daily))**2+(report_err)**2 + (model_err*abs(interval_end - 28 - interval))**2) # V2
-        # V2---
+        total_error = np.sqrt((np.log((midcent_daily + np.sqrt(midcent_daily))/midcent_daily))**2 + (report_err)**2 + (model_err*abs(interval_end - nforecast - interval))**2) # V2
 
         up_log_daily = np.sqrt((total_error*1.64)**2 + (np.log(upcent_daily/midcent_daily))**2) #1.64 for 5-95% range
         low_log_daily = np.sqrt((total_error*1.64)**2 + (np.log(midcent_daily/lowcent_daily))**2)
@@ -849,55 +923,90 @@ def update_output_graph2(n_clicks, value):
         low_log_total = np.sqrt((total_error*1.64)**2 + (np.log(midcent_total/lowcent_total))**2)
         upper_total = midcent_total*np.exp(up_log_total)
         lower_total = midcent_total*np.exp(-low_log_total)
+
+        # JDAnnan: 
+        # note as a matter of preference we include the model error term only for the future in the graphics,
+        # and the hindcast spread shows only ensemble spread and sampling/obs error. A debateable 
+        # decision but including model error here makes it look like we have a massive spread in the past,
+        # which is not the case. It could be the case that our model error term is a little large?      
+
+        upcent_daily[dates_all>stopdate] = upper_daily[dates_all>stopdate]
+        lowcent_daily[dates_all>stopdate] = lower_daily[dates_all>stopdate]
+        upcent_total[dates_all>stopdate] = upper_total[dates_all>stopdate]
+        lowcent_total[dates_all>stopdate] = lower_total[dates_all>stopdate]
+
+        upper_daily[dates_all<=stopdate] = upcent_daily[dates_all<=stopdate]
+        lower_daily[dates_all<=stopdate] = lowcent_daily[dates_all<=stopdate]
+        upper_total[dates_all<=stopdate] = upcent_total[dates_all<=stopdate]
+        lower_total[dates_all<=stopdate] = lowcent_total[dates_all<=stopdate]
         
         # Plot forecast (cumulative)
 
         ymin = np.log10(0.2)
         ymax = nearest_power_of_10(np.max(upper_total))
-#        ymax = nearest_power_of_10(np.max(upcent_total))
         yintervention = midcent_total[dates_all==interventiondate][0]
         ypeak = midcent_total[dates_all==peakdate][0]
 
         data = [             
-            go.Scatter(x=dates_all, y=upcent_total, mode='lines', 
+            go.Scatter(x=dates_all, y=upcent_total, 
+                       mode='lines', 
                        fill=None,
-                       line=dict(width=1.0, color='cyan'),
+                       line=dict(width=1.0, color='navajowhite'),
                        name='95% centile',      
                        showlegend=False,
                        yaxis='y1'),                                              
-            go.Scatter(x=dates_all, y=lowcent_total, mode='lines', 
+            go.Scatter(x=dates_all, y=lowcent_total, 
+                       mode='lines', 
                        fill='tonexty',
-                       line=dict(width=1.0, color='cyan'),
+                       line=dict(width=1.0, color='navajowhite'),
                        name='5-95% range',      
                        showlegend=True,
                        yaxis='y1'),                                              
-            go.Scatter(x=dt[dt.dates>=casedate]['dates'], y=dt[dt.dates>=casedate]['ma7_cumulative'], 
-                       mode='markers', 
-                       marker=dict(size=5, symbol='circle-open', color='red'),
-                       name='7-day MA',
-                       showlegend=True,
+            go.Scatter(x=dates_all, y=lowcent_total, 
+                       mode='lines', 
+                       fill=None,
+                       line=dict(width=1.0, color='navajowhite'),
+                       name='5% centile',      
+                       showlegend=False,
                        yaxis='y1'),                                              
-            go.Scatter(x=dates_all, y=midcent_total, mode='lines+markers', 
-                       line=dict(width=1.0,color='blue'),
-                       marker=dict(size=5, opacity=0.5), 
+            go.Scatter(x=dates_all, y=midcent_total, 
+                       mode='lines', 
+                       line=dict(width=3.0, color='red'),
                        name='Hindcast/forecast',
                        showlegend=True,
                        yaxis='y1'),                                              
+            go.Scatter(x=dt[dt.dates>=casedate]['dates'], y=dt[dt.dates>=casedate]['cumulative'], 
+                       mode='markers', 
+                       marker=dict(size=5, symbol='circle-open', color='red'), 
+                       name='3-day EWA',
+                       showlegend=True,
+                       yaxis='y1'),      
+            go.Scatter(x=dt[dt.dates>=casedate]['dates'], y=dt[dt.dates>=casedate]['raw_cumulative'].astype('int'),
+                       mode='markers', 
+                       marker=dict(size=5, symbol='cross-thin-open', color='darkslategrey'),                        
+                       name='Cumulative deaths',
+                       showlegend=True,
+                       yaxis='y1'),                                                                     
         ]
 
         data_total_error = [
              go.Scatter(x=dates_all, y=upper_total, mode='lines', 
                        fill=None,
-                       line=dict(width=1.0, color='lightgrey'),
-                       name='total error (upper limit)',      
+                       line=dict(width=1.0, color='navajowhite'),
                        showlegend=False,
                        yaxis='y1'),                                              
              go.Scatter(x=dates_all, y=lower_total, mode='lines', 
                        fill='tonexty',
-                       line=dict(width=1.0, color='lightgrey'),
-                       name='total error',      
-                       showlegend=True,
+                       line=dict(width=1.0, color='navajowhite'),
+                       name='forecast uncertainty',      
+                       showlegend=False,
                        yaxis='y1'),                                              
+             go.Scatter(x=dates_all, y=upper_total, mode='lines', 
+                       fill=None,
+                       line=dict(width=1.0, color='navajowhite'),
+                       showlegend=False,
+                       yaxis='y1'),                                              
+                       
         ]
         data = data_total_error + data
 
@@ -933,7 +1042,7 @@ def update_output_graph2(n_clicks, value):
 #            title = {'text' : 'Initialised on ' + stopdate + ' (' + str(pd.to_timedelta(pd.to_datetime(stopdate) - pd.to_datetime(interventiondate), unit='D').days) + ' days after intervention)', 'x': 0.5, 'y': 1.0},                
             yaxis=dict(title='Cumulative', range=[np.log10(0.2), np.log10( ymax )]),     
             yaxis_type="log",
-            legend_orientation="v", legend=dict(x=.72, y=0.35, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),
+            legend_orientation="v", legend=dict(x=.72, y=0.05, bgcolor='rgba(205, 223, 212, .4)', bordercolor="Black"),            
             annotations = [
                 dict(
                     text = 'R0 <br>' + "{0:.2f}".format(r0_mean) + '±' + "{0:.2f}".format(r0_sd),                    
@@ -958,10 +1067,10 @@ def update_output_graph2(n_clicks, value):
                         + '-' 
                         + "{0:.0f}".format(midcent_total[dates_all>stopdate][0] + upcent_daily[dates_all>stopdate][0])
                         +')',
-                    x = pd.to_datetime(stopdate) + pd.to_timedelta(1, unit='D'),
-                    y = np.log10(1), 
-                    xanchor = 'left',
-                    yanchor = 'bottom',
+                    x = pd.to_datetime(stopdate) - pd.to_timedelta(1, unit='D'),
+                    y = np.log10( ymax ), 
+                    xanchor = 'right',
+                    yanchor = 'top',
                     showarrow = False,
                 ),   
             ],           
