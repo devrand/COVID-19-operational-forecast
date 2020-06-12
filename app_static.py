@@ -29,13 +29,13 @@ plot_mcmc = True
 #value = 'Iran'
 #value = 'Italy'
 #value = 'Mexico'
+#value = 'Morocco'
 #value = 'Peru'
 #value = 'Russia'
 #value = 'Spain'
 #value = 'Saudi Arabia'
-#value = 'United Kingdom'
+value = 'United Kingdom'
 #value = 'US'
-value = 'Morocco'
 
 # FAILING:
 #value = 'China'
