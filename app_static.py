@@ -15,7 +15,7 @@
 # SETTINGS
 # ========================================================================
 run_smoother = True
-run_forecast = False
+run_forecast = True
 run_plots = True
 plot_intervention = True
 plot_total_error = True
@@ -33,8 +33,9 @@ plot_mcmc = True
 #value = 'Russia'
 #value = 'Spain'
 #value = 'Saudi Arabia'
-value = 'United Kingdom'
+#value = 'United Kingdom'
 #value = 'US'
+value = 'Morocco'
 
 # FAILING:
 #value = 'China'
