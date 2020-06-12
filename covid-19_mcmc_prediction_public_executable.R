@@ -21,10 +21,32 @@ stopdate <- df$stopdate[1]                   # Date of first observation
 enddate <- df$enddate[1]                     # Date of last observation + 30 days (for forecast window)
 daily <- df$daily                            # Vector of observations
 
-# Smooth data with 7-day MA
+# Smooth data with 7-day MA (moving average)
+# ------------------------------------------
+
 #library(zoo)  
-#tempdaily <- rollmean(daily, 5, na.pad = TRUE, align = "right")
+#tempdaily <- rollmean(daily, 7, na.pad = TRUE, align = "right")
 #tempdaily[is.na(tempdaily)] = 0
+#daily <- tempdaily
+
+# Smoother to regularise the data (James Annan)
+# ---------------------------------------------
+#weekly_smoother <- function(vec){
+#  newvec <- vec
+#  weekly <- rep(0,7)
+#  for (i in 1:7){
+#    dy <- 0:((length(vec)-i)/7)
+#    weekly[i+1] <- mean(vec[dy*7+i])
+#  }
+#  for (i in 1:7){
+#    dy <- 0:((length(vec)-i)/7)
+#    newvec[dy*7+i] <- (vec[dy*7+i]) * mean(weekly)/weekly[i+1]
+#  }
+#  #make sure same total
+#  newvec <- newvec*sum(vec)/sum(newvec)
+#  return(newvec)
+#}
+#tempdaily <- weekly_smoother(daily)
 #daily <- tempdaily
 
 write(case, stdout())
