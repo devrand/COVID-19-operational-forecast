@@ -16,9 +16,9 @@ case <- df$case[1]                           # Country
 N <- df$N[1]                                 # Population
 startdate <- df$startdate[1]                 # Date of first observation - 2 weeks (for spin-up) 
 initdate <- df$initdate[1]                   # Date of first observation
-interventiondate <- df$interventiondate[1]   # Date of state intervention
-stopdate <- df$stopdate[1]                   # Date of first observation
-enddate <- df$enddate[1]                     # Date of last observation + 30 days (for forecast window)
+interventiondate <- df$interventiondate[1]   # Date of state intervention / lockdown
+stopdate <- df$stopdate[1]                   # Date of last observation
+enddate <- df$enddate[1]                     # Date of last observation + 4 weeks (for forecast window)
 daily <- df$daily                            # Vector of observations
 
 # Smooth data with 7-day MA (moving average)
