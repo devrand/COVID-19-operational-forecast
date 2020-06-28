@@ -5,6 +5,8 @@
 Plotly Dash Python app implementation of the operational hindcast/forecast model of COVID-19 deaths using 
 MCMC parameter estimation by James D Annan: https://github.com/jdannan/COVID-19-operational-forecast
 
+An online app is daily updated at: https://patternizer-covid19-forecast.herokuapp.com/
+
 ## Contents
 
 * `app.py` - main script to be run with Python 3.6+
