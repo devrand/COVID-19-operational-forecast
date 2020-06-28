@@ -1,0 +1,1582 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.path='figures/covid-pred-',dev = c('pdf'),echo = F) #saving figs if you knit
+```
+
+This is to do the lockdown calculations. 
+
+
+```{r model, include=F,echo=F}
+
+
+# Represent the basic dynamics in a 6-box version of SEIR based on this post from Thomas House:
+# https://personalpages.manchester.ac.uk/staff/thomas.house/blog/modelling-herd-immunity.html
+#There are two E and I boxes, the reasons for which I
+#can guess at but it's not my model so I won't :-)
+
+odefun <-function(t,state,parameters){
+  with(as.list(c(state, parameters)),{
+  beta <- parameters[1]
+  sigma <- parameters[2]
+  gamma <- parameters[3]
+
+  x<- state
+  
+    dx <- rep(0,6)
+    dx[1] <- -beta*x[1]*(x[4] + x[5]) #susceptible
+    dx[2] <- beta*x[1]*(x[4] + x[5]) - sigma*x[2] #newly infected but latent
+    dx[3] <- sigma*x[2] - sigma*x[3] #late stage latent
+    dx[4] <- sigma*x[3] - gamma*x[4] #newly infectious
+    dx[5] <- gamma*x[4] - gamma*x[5] #late infectious
+    dx[6] <- gamma*x[5] #recovered
+    return(list(dx))
+})}
+```
+
+Set a few parameters
+
+```{r params, include=F,echo=T}
+# Some basic setup that I need 
+
+library(date)
+
+epi <- data.frame(row.names = c("UK","UK_all_rep","UK_care","UK_hosp","United Kingdom","UK_no_intervention","Lombardy","Italy","Spain","Switzerland","France","Portugal","Sweden","Germany","Belgium","Hubei"),startdate =  as.Date(c("2020-2-1","2020-2-1","2020-2-1","2020-2-1","2020-2-1","2020-2-1","2020-1-1","2020-1-20","2020-2-1","2020-2-1","2020-2-1","2020-2-20","2020-2-1","2020-2-1","2020-2-10","2019-12-01")),interventiondate=as.Date(c("2020-3-23","2020-3-23","2020-3-24","2020-3-22","2020-3-24","2020-6-1","2020-3-8","2020-3-8","2020-3-13","2020-3-17","2020-3-17","2020-3-17","2020-3-17","2020-3-22","2020-3-17","2020-1-23")),N=c(6.7e7,6.7e7,6.7e7,6.7e7,6.7e7,6.7e7,1.e7,6.e7,4.7e7,8.6e6,6.7e7,1.e7,1.e7,8.3e7,1.2e7,6.e7))
+
+#SET CASE
+
+#case <- "Hubei"
+#case <- "United Kingdom"
+#case <- "UK_no_intervention" #counterfactual where I set interventiondate very late
+#case <- "Lombardy"
+#case <- "Spain"
+#case <- "Italy"
+#case <- "Switzerland"
+#case <- "Sweden"
+#case <- "France"
+#case <- "Portugal"
+#case <- "Germany"
+#case <- "UK_hosp"
+#case <- "UK"
+case <- "UK_all_rep"
+#case <- "Belgium"
+
+#choose a long or short run type
+#run_type <- "full"
+run_type <- "test"
+
+history <- list()
+
+
+startdate <- epi[case,1]
+interventiondate <- epi[case,2]
+N <- epi[case,3]
+
+
+print(case)
+print(c(startdate,interventiondate))
+print(N)
+
+saved <- data.frame(row.names = "dummy",case = "dummy",date = as.Date("2020-1-1"),rt_mean=0.0,rt_2.5 = 0.0,rt_97.5 = 0.0)
+
+
+        #parameters for error calculation
+    report_err <- 0.2
+    model_err <- 0.05
+
+#prior mean for parameters in order
+    par_pri <- c(4.5,2.5,-15,0.0075,3,1.)
+
+#prior sd
+    par_sd <- c(.5,0.5,15,0.00125,1,.5)
+
+
+    
+    
+```
+
+Centile function:
+
+```{r centile}
+centile <- function(data,cent){
+  
+  len <- dim(data)[2] #length of series
+  num <- dim(data)[1]
+out <- rep(0,len)
+for (i in 1:len){
+  so <- sort(data[,i])
+  out[i] <- so[max(1,num*cent)] #max operator to stop falling out of range, this just takes the floor which is sloppy but fine for my purposes. Improve it if you care!
+ 
+}  
+
+
+return(out)
+
+}
+
+```
+
+
+```{r death}
+#function to calculate deaths from a vector of infectious
+
+dead <- function(infectious,death,infectious_period){
+ 
+    deadout  <- 0*infectious #empty array of correct size
+
+#parameters deduced from Ferguson except changing their mean of 18.8 to 15 for somewhat subjective reasons 
+#(including: I am calculating based on all infectious, not initially infectious, people).
+#If you want to replicate their function just change the 15 back to 18.8
+
+  sh=4.9
+  sc=15/sh
+  sc=17.8/sh
+
+death_gam <- dgamma((0:60),scale=sc,shape=sh)
+death_gam <- death_gam/sum(death_gam)
+death_rev<- rev(death_gam)
+
+for (j in 1:length(deadout)){
+  
+  deadout[j] <- (death/infectious_period)*sum(death_rev[max(1,62-j):61]*infectious[max(1,j-60):j])
+}
+ 
+return(deadout)  
+}
+
+
+
+```
+
+
+This code is how I run the model in chunks with different R0 values sequentially
+
+```{r piecewise_runner, echo=F}
+
+library(deSolve)
+
+runner <- function(rundeck,latent_p,infectious_p,i0_p){
+
+allout <- array(0,dim=c(1+tail(rundeck[,1],1),7))
+
+for (tt in 1:dim(rundeck)[1]){
+
+    if (tt>1) {
+      start <- rundeck$dy[tt-1] 
+      state <- tail(out,n=1)[2:7]
+    }
+  else{
+    start = 0
+    state=array(c(1.0-2.0*i0_p, 0.0, 0.0, i0_p, i0_p, 0.0))
+  }
+  
+
+    finish <- rundeck$dy[tt]
+    beta <- rundeck$R0[tt] / infectious_p
+    sigma <- 2.0 / latent_p
+    gamma <- 2.0 / infectious_p
+
+parameters <- c(beta,sigma,gamma)
+
+if(finish > start){ #only run if it's a positive interval
+out <- ode(y=state,times=seq(start,finish),func = odefun, parms = parameters,method="ode45") 
+#not sure about integration method.....default was fine unless R0 went too small..don't think precision is really an issue here
+
+
+allout[start:finish+1,] <- out
+
+}
+
+
+}
+
+return(allout)
+}
+```
+
+code to run model and evaluate cost (log likelihood) vs observations. Including prior.
+
+```{r modelcost, echo=F}
+
+modelcost <- function(params,obs){ 
+
+  latent_period <- max(.5,min(params[1],10)) #bound with 0.1 and 10
+  infectious_period <- max(.5,min(params[2],10)) #bound with 0.1 and 10
+  i0 <- max(0.,min(exp(params[3]),.01)) #bound with 0. and 0.01 NB this one is logarithmic!
+  death <- max(0.001,min(params[4],0.05)) #bound with 0.1 and 5%
+
+    R0 <- max(1.,min(params[5],10)) #bound with 0.1 and 10 also not less than 1 in initial segment
+    Rt <- max(0.01,min(params[6],10)) #bound with 0.1 and 10
+
+#prior mean for parameters in order
+    par_pri <- c(4.5,2,-15,0.0075,3,1.)
+
+#prior sd
+    par_sd <- c(.5,0.1,15,0.0003,1,.5)
+
+###testing differnet priors    
+#prior mean for parameters in order
+    par_pri <- c(4.5,2.5,-15,0.0075,3,1.)
+
+#prior sd
+    par_sd <- c(.5,0.5,15,0.00125,1,.5)
+
+    
+    
+
+      
+#set up the rundeck
+    
+  #total length of run is hard-wired here, doesn't need to be too long until we get a lot of obs
+  
+    rundeck <- data.frame(dy = c(as.numeric(as.Date(interventiondate)-as.Date(startdate)),160),R0 = c(R0,Rt))
+
+    #run the model
+    
+  outs <- runner(rundeck,latent_period,infectious_period,i0)
+
+
+  infectout  <- rowSums(outs[,5:6]) #calculated total infected over time
+  
+deadout <- dead(infectout,death,infectious_period) #daily deaths
+
+
+    cumdeadout = cumsum(deadout) #convenient to have cumulative deaths
+
+    
+    #Cost function = log likelihood  
+
+    #need to make sure that zero/low deaths doesn't give a huge error in log space, so I've imposed lower bounds on both model and data
+    #note even thoguh I have modified data to eliminate missed days there can still some occasional zeros in the early stages of the epidemic
+    
+    #prediction error consists of three parts:
+    #true obs error (0.2)
+    #sampling error (sqrt(n)/n where n is predicted deaths)
+    #model error (0.05*DT where DT is number of days before present)
+    pdead <- pmax(N*deadout[obs[,1]],0.5) #predicted dead on the obs days truncated at 0.1
+    obs_err_sq <- report_err^2 + (log(1+((sqrt(abs(pdead))+1))/pdead))^2 + (model_err*(tail(obs[,1],1)-obs[,1]))^2 
+
+    
+    dett <-  prod(obs_err_sq) 
+#    print(dett)
+    
+      data_cost <- -0.5*log(dett) -0.5*sum(((log(pdead)-log(pmax(obs[,2],.5)))^2)/obs_err_sq)
+
+      pri_cost <- -0.5*sum((params-par_pri)^2/par_sd^2)
+      
+      cost <- data_cost + pri_cost
+
+
+      if(is.nan(cost)) cost<- -10000
+      return(cost)
+}
+
+
+```
+
+```{r get_data_median, echo=F}
+
+    
+get_data_median <- function(case){
+
+#Median of 3 data sets
+#worldometer, ECDC and github
+#only needs one data point to count!
+#special cases for Lombardy and Hubei at start
+
+theta_start <- c(4,2,-15,0.007,3,1.1)
+
+
+if(case == "Lombardy") {
+  
+library(jsonlite)
+
+  
+  ##https://github.com/pcm-dpc/COVID-19/blob/master/dati-json/dpc-covid19-ita-regioni.json
+italy <- fromJSON("data/dpc-covid19-ita-regioni.json")
+#or use web for latest version?
+
+lombardy_date <- as.Date(italy$data[which(italy$denominazione_regione == "Lombardia")])
+
+lombardy_dead <- italy$deceduti[which(italy$denominazione_regione == "Lombardia")]
+
+daynumber <- as.numeric(as.Date(lombardy_date)-as.Date(startdate))
+dailydead <- c(lombardy_dead[1],lombardy_dead[-1]-head(lombardy_dead,-1))
+
+####HAVE TO EDIT IN EXTRA EARLY DATA FOUND ON WIKIPEDIA
+#https://en.wikipedia.org/wiki/2020_coronavirus_pandemic_in_Italy
+
+ addobs <- c(1,1,1,3)
+ addobsdates <- seq(as.Date("2020-2-20"),as.Date("2020-2-23"),by=1)
+   addobsdates_n <- as.numeric(addobsdates-startdate)
+
+  obs <- data.frame(c(addobsdates_n,daynumber),c(addobs,dailydead),c(addobs,dailydead)*0)
+
+} else if (case == "Hubei") {
+
+#  wuhanc <- read.csv("data/hubei.csv") #this is decent data but missing first few days
+
+#  daily <- tail(wuhanc[,8],-1) - head(wuhanc[,8],-1)
+#  days_n <- as.numeric(as.Date(tail(wuhanc[,1],-1))-startdate)
+
+
+data <- read.csv("data/covid_19_clean_complete.csv")
+
+dead <- data[which(data[,1] == "Hubei"),7]
+daily <- head(tail(tail(dead,-1) - head(dead,-1),-1),-1)
+
+days_n <- head(tail(tail(as.numeric(as.Date(data[which(data[,1] == "Hubei"),5],format="%m/%d/%y")-startdate),-1),-1),-1)
+
+
+
+#simple fix for missing data in this time series  
+
+obsfix <- which(daily==0)
+delta_1 <- daily[obsfix-1]/3
+delta_2 <- daily[obsfix+1]/3
+daily[obsfix] <- daily[obsfix] + delta_1+delta_2
+daily[obsfix+1] <- daily[obsfix+1] - delta_2
+daily[obsfix-1] <- daily[obsfix-1] -delta_1
+
+
+daily <- head(daily,80)
+days_n <- head(days_n,80)
+  
+ ####ADD IN FAKE DATA
+ ###
+ ### wuhan data are missing the first few days making 17 cases in all
+ ###
+ ### I'm just adding in a few obs to make up these values - couldn't find truth! doesn't matter though.
+ 
+
+ addobs <- c(1,0,0,0,0,0,1,0,1,1,2,3,8)
+ addobsdates <- seq(as.Date("2020-1-11"),as.Date("2020-1-23"),by=1)
+   addobsdates_n <- as.numeric(addobsdates-startdate)
+
+   
+#     obs <- data.frame(days_n,daily)
+  obs <- data.frame(c(addobsdates_n,days_n),c(addobs,daily))
+
+
+     
+} else if (case=="UK_care"){
+  
+  data <- read.csv("data/Figure_7__The_number_of_COVID-19_deaths_in_care_homes_continues_to_increase.csv",skip=9)
+  
+  dates <- as.numeric(as.Date(1:length(data$Date),origin="2020-03-01")-as.Date(startdate))
+  deaths <- rowSums(data[,2:5])
+  deaths <- data[,4]
+
+  first <- min(which(deaths>0))
+  
+  obs <- cbind(dates,deaths)  
+  obs <- tail(obs,-(first-1))
+} else if (case=="UK_hosp"){
+  
+  data <- data <- read.csv("data/Figure_7__The_number_of_COVID-19_deaths_in_care_homes_continues_to_increase.csv",skip=9)
+  
+  dates <- as.numeric(as.Date(1:length(data$Date),origin="2020-03-01")-as.Date(startdate))
+  deaths <- rowSums(data[,2:5])
+  deaths <- data[,5]
+
+
+  obs <- cbind(dates,deaths)  
+
+} else if (case=="UK_all_rep"){
+  
+  data <- read.table('data/UK.all.reported.txt')
+  
+  #dates <- as.numeric(as.Date(1:length(data$Date),origin="2020-03-01")-as.Date(startdate))
+  deaths <- rev(data[,4])
+  deaths <- as.numeric(sub(",","",deaths))
+  dates <- seq(length(deaths)) + as.numeric(as.Date(1,origin="2020-03-04")-as.Date(startdate))
+
+  #add_dates <- c(88)
+  #add_deaths <- c(765)
+
+  obs <- cbind(dates,deaths)  
+  
+  } else {
+
+###worldometer data first
+
+daily <- scan(paste("data/",case,".worldometer.txt",sep=""),skip=4,sep=",")
+dates <- seq(as.Date("2020-2-15"),by=1,length.out=length(daily))
+dates_n <- as.numeric(as.Date(dates)-as.Date(startdate))
+
+first <- min(which(daily > 0))
+
+obs_world <- data.frame(tail(dates_n,n=-(first-1)),tail(daily,n=-(first-1)))
+
+obs_world <- cbind(dates_n,daily)
+
+#print(obs_world)
+
+data <- read.csv("data/ECDC-latest.csv")
+
+casename <- case
+if(case == "UK")casename <- "United_Kingdom"
+
+subset <- data[which(data$countriesAndTerritories == casename),]
+
+daily_death <- rev(subset[,6])
+daily_date <- rev(as.Date(subset[,1],format="%d/%m/%Y"))
+daily_date_n <- as.numeric(as.Date(daily_date)-as.Date(startdate))
+
+first <- min(which(daily_death > 0))
+first <- 1
+
+
+obs_ecdc <- data.frame(tail(daily_date_n,n=-(first-1))-1,tail(daily_death,n=-(first-1)))
+obs_ecdc <- cbind(daily_date_n-1,daily_death)
+
+
+data <- read.csv("data/countries-aggregated.csv")
+
+casename <- case
+if(case == "UK")casename <- "United Kingdom"
+
+subset <- data[which(data$Country == casename),]
+
+daily_death <- tail(subset[,5],-1)-head(subset[,5],-1)
+daily_date <- tail(as.Date(subset[,1],format="%Y-%m-%d"),-1)
+daily_date_n <- as.numeric(as.Date(daily_date)-as.Date(startdate))
+
+first <- min(which(daily_death > 0))
+first <- 1
+
+obs_git <- data.frame(tail(daily_date_n,n=-(first-1)),tail(daily_death,n=-(first-1)))
+obs_git <- cbind(daily_date_n,daily_death)
+
+
+plot(obs_git,log="y",col="green",ylim=c(1,2000))
+points(obs_ecdc,col="red",pch=2)
+points(obs_world,col="blue",pch=3)
+
+#now to take median
+#terribly messy but handles missing values quite well
+
+obs_all <- rbind(obs_world,obs_ecdc,obs_git)
+start <- min(obs_all[,1])
+stop<- max(obs_all[,1])
+                          
+obs_median <- array(0,dim=c((stop-start+1),2))
+
+for(i in start:stop){
+  obs_median[i,2]<- median(obs_all[which(obs_all[,1]==i),2])
+obs_median[i,1]=i
+}
+
+first <- min(which(obs_median[,2] > 0.8))
+last <- max(which(obs_median[,2] > 0.8))
+
+obs <- obs_median[first:last,]
+
+points(obs,col="pink",pch=4)
+
+  
+}
+
+
+###
+###Special edit for early "France" case who was actually a Chinese tourist
+###
+
+#not necessary as we start from worldometer start point
+
+#if(case == "France"){
+#cutoff <- min(which(tail(obs[,2],-1) > 0))
+#obs <- tail(obs,-cutoff)
+#}
+
+
+
+
+#smooth out to eliminate gaps - note slightly clumsy code to ensure conservation
+#I'm just taking 1/3 of obs from both neighbours of a zero under the assumption this is
+# a reporting error
+
+#disable for next test
+obsfix <- which(obs[,2]==0)
+delta_1 <- obs[obsfix-1,2]/3
+delta_2 <- obs[obsfix+1,2]/3
+obs[obsfix,2] <- obs[obsfix,2] + delta_1+delta_2
+obs[obsfix+1,2] <- obs[obsfix+1,2] - delta_2
+obs[obsfix-1,2] <- obs[obsfix-1,2] -delta_1
+
+return(obs)
+}
+```
+
+```{r run_ensemble}
+
+#this does an ensemble of n_ens model runs based on posterior parameter distributionr
+
+run_ensemble <- function(post.samp,n_ens,modelrunlen){
+
+
+allouts <- array(0,dim=c(n_ens,modelrunlen+1,7))
+alldeadout <- array(0,dim = c(n_ens,modelrunlen+1))
+allcumdeadout <- array(0,dim = c(n_ens,modelrunlen+1))
+
+for (loop in 1:n_ens){
+  
+  params <- post.samp[loop*(runlength/n_ens),]
+  
+  latent_period <- max(.5,min(params[1],10)) #bound with 0.1 and 10
+  infectious_period <- max(.5,min(params[2],10)) #bound with 0.1 and 10
+  i0 <- max(0.,min(exp(params[3]),.01)) #bound with 0. and 10
+  death <- max(0.001,min(params[4],0.05)) #bound with 0.1 and 5%
+  
+  R0 <- max(1.,min(params[5],10)) #bound with 0.1 and 10 not less than 1
+  Rt <- max(0.1,min(params[6],10)) #bound with 0.1 and 10
+  
+
+  
+#set up the rundeck
+  
+    rundeck <- data.frame(dy = c(as.numeric(as.Date(interventiondate)-as.Date(startdate)),modelrunlen),R0 = c(R0,Rt))
+
+
+    #run the model
+    
+  outs <- runner(rundeck,latent_period,infectious_period,i0)
+
+
+  infectout  <- rowSums(outs[,5:6])
+
+deadout <- dead(infectout,death,infectious_period)
+
+
+    cumdeadout = cumsum(deadout)
+  
+  allouts[loop,,]<- outs
+  alldeadout[loop,] <- deadout
+  allcumdeadout[loop,] <- cumdeadout
+  
+
+}
+
+runobject <- list()
+
+runobject$allouts <- allouts
+runobject$alldeadout <- alldeadout
+runobject$allcumdeadout <- allcumdeadout
+
+return(runobject)
+}
+
+```
+
+```{r analyse_ensemble}
+
+#just output a few diagnostics...check for reasonable convergence
+
+analyse_ensemble <- function(mcmc_object){
+library("coda")
+
+plot(mcmc_object)
+
+print(summary(mcmc_object))
+
+crosscorr(mcmc_object)
+crosscorr.plot(mcmc_object)
+
+}
+
+```
+
+
+```{r plot_result}
+
+#plots a picture of the forecast
+
+plot_result <- function(run_object,obs,mcmc_object,case,obs_extra=NULL,range=c(30,121),p.ylim=c(.5,10000),p.labels=c("1","2","10","20","100","200","1000","2000"),p.at=c(1,2,10,20,100,200,1000,2000)){
+
+
+old.par <- par(cex=1.2)#,cex.main=2.5,cex.lab=2.5,cex.axis=2.5)
+  
+    
+  allouts <- run_object$allouts
+  alldeadout <- run_object$alldeadout
+  allcumdeadout <- run_object$allcumdeadout
+  
+  n_ens <- dim(allouts)[1]
+  
+  data_pts <- length(obs[,2])
+  
+  post_inter <- sum(as.Date(obs[,1],origin=startdate) > interventiondate)
+  
+  r0_mean <- mean(mcmc_object[,5])
+  r0_sd <- sd(mcmc_object[,5])
+
+  rt_mean <- mean(mcmc_object[,6])
+  rt_sd <- sd(mcmc_object[,6])
+  
+num_lines <- 0
+
+
+  interval <- seq(range[1],range[2]) 
+
+    
+  dates <- as.Date(allouts[1,interval,1],origin=startdate)
+  lowcent <- N*(centile((alldeadout[,interval]),.05))
+  midcent <- N*(centile((alldeadout[,interval]),.5))
+  upcent <- N*(centile((alldeadout[,interval]),.95))
+
+  title=paste("Hindcast/forecast for daily deaths in ",case,"\n", format(as.Date(tail(obs[,1],1),origin=startdate), "%a %b %d"),", ",post_inter," days after lockdown",sep="")
+
+  plot(dates,upcent,ty='n',xlab="Date",ylab="Daily deaths",lty="dotted", lwd=2,log="y",ylim=p.ylim,yaxt="n")#main=title,
+  
+  
+  points(dates,midcent,ty='l',lwd=2,col="blue")
+ axis(side=2,labels=p.labels,at=p.at)
+
+
+
+nowdate <- tail(obs[,1],1)
+
+
+#note as a matter of preference we include the model error term only for the future in the graphics,
+#and the hindcast spread shows only ensemble spread and sampling/obs error. A debateable 
+#decision but including model error here makes it look like we have a massive spread in the past,
+#which is not the case. It could be the case that our model error term is a little large?
+
+total_err <- sqrt((log((midcent+sqrt(midcent))/midcent))^2+(report_err)^2 + (model_err*pmax(interval-nowdate,0))^2)
+
+up_log <- sqrt((total_err*1.64)^2 + (log(upcent/midcent))^2) #1.64 for 5-95% range
+low_log <- sqrt((total_err*1.64)^2 + (log(midcent/lowcent))^2)
+
+upper_total <- midcent*exp(up_log)
+lower_total <- midcent*exp(-low_log)
+
+polygon(c(dates,rev(dates)),c(upper_total,rev(lower_total)),col=rgb(red=0,green=0,blue=1,alpha=0.2),border=NA)
+
+
+if(num_lines > 0){
+for (i in 1:num_lines){
+  
+    points(dates,N*(alldeadout[i*(n_ens/num_lines),interval]),ty='l',col='blue')
+  
+}
+}
+ points(dates,midcent,ty='l',lwd=2,col="blue")
+
+
+points(as.Date(obs[,1],origin=startdate),pmax(obs[,2],0.5),pch=20,col="black")
+
+#plotting the validation data...no analysis performed!
+if (!is.null(obs_extra)){
+points(as.Date(obs_extra[,1],origin=startdate),pmax(obs_extra[,2],0.5),pch=4,col="magenta")
+  }
+
+text(as.Date(tail(obs[,1],1),origin=startdate),p.ylim[2]/1.5,pos=4,format(as.Date(tail(obs[,1],1),origin=startdate), "%d %b"))
+
+
+
+tomorrow <- which(dates == as.Date(tail(obs[,1],1)+1,origin=startdate))
+
+txt0 <- sprintf("R0 = %1.2f ± %1.2f",r0_mean,r0_sd)
+#text(interventiondate - 12,300,txt0)
+txt0 <- sprintf("R0 \n %1.1f (%1.1f - %1.1f)",r0_mean,max(0,r0_mean-1.96*r0_sd),r0_mean+1.96*r0_sd)
+text(interventiondate,p.ylim[2]/4,pos=2,txt0)
+
+if(dates[tomorrow] > interventiondate){
+  abline(v=interventiondate)
+
+text(interventiondate,1,pos=4,format(as.Date(interventiondate,origin=startdate), "%d %b"))
+
+  
+txtt <- sprintf("Rt = %1.2f ± %1.2f",rt_mean,rt_sd)
+#text(interventiondate + 30,3,txtt)
+txtt <- sprintf("Rt \n  %1.1f (%1.1f - %1.1f)",rt_mean,max(0,rt_mean-1.96*rt_sd),rt_mean+1.96*rt_sd)
+text(interventiondate + 30,3,txtt)
+}
+
+txtf2 <- sprintf("Tomorrow's forecast: %.0f (%.0f - %.0f)",signif(midcent[tomorrow],digits=2),signif(lower_total[tomorrow],digits=2),signif(upper_total[tomorrow],digits=2))
+
+
+
+par <- old.par
+ 
+  
+}
+
+```
+
+
+```{r plot_result_history}
+
+#plots a picture of the forecast including historical medians if applicable
+
+plot_result_history <- function(run_object,obs,mcmc_object,case,obs_extra=NULL,history=NULL,range=c(30,121),p.ylim=c(.5,10000),p.labels=c("1","2","10","20","100","200","1000","2000"),p.at=c(1,2,10,20,100,200,1000,2000)){
+
+
+old.par <- par(cex=1.3)#,cex.main=2.5,cex.lab=2.5,cex.axis=2.5)
+  
+    
+  allouts <- run_object$allouts
+  alldeadout <- run_object$alldeadout
+  allcumdeadout <- run_object$allcumdeadout
+  
+  n_ens <- dim(allouts)[1]
+  
+  data_pts <- length(obs[,2])
+  
+  post_inter <- sum(as.Date(obs[,1],origin=startdate) > interventiondate)
+  
+  r0_mean <- mean(mcmc_object[,5])
+  r0_sd <- sd(mcmc_object[,5])
+
+  rt_mean <- mean(mcmc_object[,6])
+  rt_sd <- sd(mcmc_object[,6])
+  
+num_lines <- 0
+
+
+  interval <- seq(range[1],range[2]) 
+
+    
+  dates <- as.Date(allouts[1,interval,1],origin=startdate)
+  lowcent <- N*(centile((alldeadout[,interval]),.05))
+  midcent <- N*(centile((alldeadout[,interval]),.5))
+  upcent <- N*(centile((alldeadout[,interval]),.95))
+
+  title=paste("Hindcast/forecast for daily deaths in ",case,"\n", format(as.Date(tail(obs[,1],1),origin=startdate), "%a %b %d"),", ",post_inter," days after lockdown",sep="")
+
+  plot(dates,upcent,ty='n',xlab="Date",ylab="Daily deaths",main=title,lty="dotted", lwd=2,log="y",ylim=p.ylim,yaxt="n")
+  
+  
+  points(dates,midcent,ty='l',lwd=2,col="magenta")
+ axis(side=2,labels=p.labels,at=p.at)
+
+
+
+nowdate <- tail(obs[,1],1)
+
+
+#note as a matter of preference we include the model error term only for the future in the graphics,
+#and the hindcast spread shows only ensemble spread and sampling/obs error. A debateable 
+#decision but including model error here makes it look like we have a massive spread in the past,
+#which is not the case. It could be the case that our model error term is a little large?
+
+total_err <- sqrt((log((midcent+sqrt(midcent))/midcent))^2+(report_err)^2 + (model_err*pmax(interval-nowdate,0))^2)
+
+up_log <- sqrt((total_err*1.96)^2 + (log(upcent/midcent))^2) #1.64 for 5-95% range 1.96 for 2.5-97.5
+low_log <- sqrt((total_err*1.96)^2 + (log(midcent/lowcent))^2)
+
+upper_total <- midcent*exp(up_log)
+lower_total <- midcent*exp(-low_log)
+
+polygon(c(dates,rev(dates)),c(upper_total,rev(lower_total)),col=rgb(red=0,green=1,blue=0,alpha=0.2),border="green")
+
+
+if(num_lines > 0){
+for (i in 1:num_lines){
+  
+    points(dates,N*(alldeadout[i*(n_ens/num_lines),interval]),ty='l',col='blue')
+  
+}
+}
+
+
+points(as.Date(obs[,1],origin=startdate),pmax(obs[,2],0.5),col="red",lwd=3)
+
+#plotting the validation data...no analysis performed!
+if (!is.null(obs_extra)){
+points(as.Date(obs_extra[,1],origin=startdate),pmax(obs_extra[,2],0.5),col="blue")
+}
+
+
+#do the historical cases
+
+nhist <- length(which(history$case == case))
+if(nhist > 1){
+for (i in 1:(nhist-1)){
+  
+  start <- history$date[i]+1
+  start_n <- as.numeric(start-startdate)+1
+  fin <- start + 27
+  fin_n <- as.numeric(fin-startdate)+1
+    print(dates)
+  #  points(dates,history$median[[i]][interval],ty='l',col='blue',lwd=3)
+    points(start:fin,history$median[[i]][start_n:fin_n],ty='l',col='pink',lwd=3)
+#    points(start:fin,history$upper[[i]][start_n:fin_n],ty='l',col='pink',lwd=3,lty="dashed")
+#    points(start:fin,history$lower[[i]][start_n:fin_n],ty='l',col='pink',lwd=3,lty="dashed")
+  
+}
+}
+
+
+
+
+ points(dates,midcent,ty='l',lwd=2,col="magenta")
+
+
+tomorrow <- which(dates == as.Date(tail(obs[,1],1)+1,origin=startdate))
+
+txt0 <- sprintf("R0 = %1.2f ± %1.2f",r0_mean,r0_sd)
+#text(interventiondate - 12,300,txt0)
+txt0 <- sprintf("R0 \n %1.1f (%1.1f - %1.1f)",r0_mean,max(0,r0_mean-1.96*r0_sd),r0_mean+1.96*r0_sd)
+text(interventiondate,p.ylim[2]/4,pos=2,txt0)
+
+if(dates[tomorrow] > interventiondate){
+  abline(v=interventiondate)
+text(interventiondate,p.ylim[2]/1.5,pos=4,format(as.Date(interventiondate,origin=startdate), "%d %b"))
+
+  
+txtt <- sprintf("Rt = %1.2f ± %1.2f",rt_mean,rt_sd)
+#text(interventiondate + 30,3,txtt)
+txtt <- sprintf("Rt \n  %1.1f (%1.1f - %1.1f)",rt_mean,max(0,rt_mean-1.96*rt_sd),rt_mean+1.96*rt_sd)
+text(interventiondate + 30,3,txtt)
+}
+
+txtf2 <- sprintf("Tomorrow's forecast: %.0f (%.0f - %.0f)",signif(midcent[tomorrow],digits=2),signif(lower_total[tomorrow],digits=2),signif(upper_total[tomorrow],digits=2))
+
+
+
+par <- old.par
+ 
+  
+}
+
+```
+
+
+```{r runmonte-Hubei, eval=T,include=F}
+
+#This is the  bit that actually does the work...calls the mcmc routine
+
+
+case <- "Hubei"
+
+startdate <- epi[case,1]
+interventiondate <- epi[case,2]
+N <- epi[case,3]
+
+
+print(case)
+
+obs <- get_data_median(case)
+
+#print(obs)
+
+library(MCMCpack)
+
+
+#this should be a decent production-level length
+burn<-3000
+runlength<-5000
+
+
+
+if(run_type == "test"){
+#use these lines for shorter tests when setting up changes...saves a bit of time
+burn<-000
+runlength<-500
+}
+
+set.seed(42) #reproducibility!
+
+
+obs_save <- obs
+
+num_obs <- length(obs_save[,2])
+
+
+#vals <- c(48,24,0) #
+vals <- c("2020-01-26","2020-02-02","2020-02-09","2020-02-16","2020-02-23","2020-03-01","2020-03-08","2020-03-15","2020-03-22","2020-03-29","2020-04-05","2020-04-12") #
+
+for (k in vals){
+#k <- 0
+obs_extra <- NULL
+obs=obs_save
+
+if(k>0){
+obs_extra <- tail(obs_save,(num_obs-which(as.Date(obs_save[,1],origin=startdate)==k)))
+obs=head(obs_save,which(as.Date(obs_save[,1],origin=startdate)==k))
+}
+
+post.samp <- MCMCmetrop1R(modelcost, theta.init= c(4,2,-20,0.007,3,1.1),#par_pri,
+                          obs=obs,thin=1, mcmc=runlength, burnin=burn,
+                                  verbose=500, logfun=TRUE)
+
+
+#@
+
+#nb using median, 2.5 and 97.5 centiles for rt
+nsamp <- length(post.samp[,6])
+rts <- sort(post.samp[,6])
+
+    if(k>0){
+saved <- rbind(saved,data.frame(case=case,date=as.Date(k,origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+} else {
+saved <- rbind(saved,data.frame(case=case,date=as.Date(tail(obs[,1],1),origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+}
+    
+
+#<<analysis>>=
+analyse_ensemble(post.samp)
+run.obj <- run_ensemble(post.samp,500,150)
+
+#save result from hubei for final plot
+    if(k>0){
+
+history$case <- append(history$case,case)
+history$date <- append(history$date,as.Date(k))
+history$median <- append(history$median,list(N*(centile((run.obj$alldeadout),.5))))
+history$upper <- append(history$upper,list(N*(centile((run.obj$alldeadout),.975))))
+history$lower <- append(history$lower,list(N*(centile((run.obj$alldeadout),.025))))
+}
+#plot_result(run.obj,obs,post.samp,case,obs_extra,interventiondate,range=c(2,30))
+plot_result(run.obj,obs,post.samp,case,obs_extra,range=c(25,150),p.ylim=c(0.5,500),p.labels=c("1","2","10","20","100","200"),p.at=c(1,2,10,20,100,200))
+plot_result_history(run.obj,obs,post.samp,case,obs_extra,history,range=c(15,150),p.ylim=c(0.5,500),p.labels=c("1","2","10","20","100","200"),p.at=c(1,2,10,20,100,200))
+#plot_result(run.obj,obs,post.samp,case,obs_extra)
+}
+
+
+```
+
+
+```{r runmonte-Spain-median, eval=T,include=F}
+
+#This is the  bit that actually does the work...calls the mcmc routine
+
+
+case <- "Spain"
+
+startdate <- epi[case,1]
+interventiondate <- epi[case,2]
+N <- epi[case,3]
+
+
+print(case)
+
+obs <- get_data_median(case)
+
+library(MCMCpack)
+
+
+#this should be a decent production-level length
+burn<-3000
+runlength<-5000
+
+
+if(run_type == "test"){
+#use these lines for shorter tests when setting up changes...saves a bit of time
+burn<-000
+runlength<-500
+}
+
+
+set.seed(42) #reproducibility!
+
+
+obs_save <- obs
+
+num_obs <- length(obs_save[,2])
+
+
+#vals <- c(48,24,0) #
+vals <- c("2020-03-22","2020-03-29","2020-04-05","2020-04-12","2020-04-19","2020-04-26","2020-05-03","2020-05-10",0) #
+for (k in vals){
+#k <- 0
+obs_extra <- NULL
+obs=obs_save
+
+if(k>0){
+obs_extra <- tail(obs_save,(num_obs-which(as.Date(obs_save[,1],origin=startdate)==k)))
+obs=head(obs_save,which(as.Date(obs_save[,1],origin=startdate)==k))
+}
+
+
+theta.start <- c(4,2,-17,0.007,3,1.)
+
+post.samp <- MCMCmetrop1R(modelcost, theta.init=theta.start,#par_pri,
+                          obs=obs,thin=1, mcmc=runlength, burnin=burn,
+                                  verbose=500, logfun=TRUE)
+
+
+r0_mean <- mean(post.samp[,5])
+r0_sd <- sd(post.samp[,5])
+rt_mean <- mean(post.samp[,6])
+rt_sd <- sd(post.samp[,6])
+  
+    print(c(rt_mean,rt_mean-1.96*rt_sd,rt_mean+1.96*rt_sd))
+
+
+#nb using median, 2.5 and 97.5 centiles for rt
+nsamp <- length(post.samp[,6])
+rts <- sort(post.samp[,6])
+
+    if(k>0){
+saved <- rbind(saved,data.frame(case=case,date=as.Date(k,origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+} else {
+saved <- rbind(saved,data.frame(case=case,date=as.Date(tail(obs[,1],1),origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+}
+  
+    
+
+analyse_ensemble(post.samp)
+run.obj <- run_ensemble(post.samp,500,120)
+#plot_result(run.obj,obs,post.samp,case,obs_extra,interventiondate,range=c(2,30))
+plot_result(run.obj,obs,post.samp,case,obs_extra,range=c(10,120))#,p.ylim=c(0.5,1500),p.labels=c("1","2","10","20","100","200","1000"),p.at=c(1,2,10,20,100,200,1000)
+
+
+#plot_result(run.obj,obs,post.samp,case,obs_extra)
+}
+
+
+```
+
+
+```{r runmonte-France-median, eval=T,include=F}
+
+#This is the  bit that actually does the work...calls the mcmc routine
+
+
+case <- "France"
+
+startdate <- epi[case,1]
+interventiondate <- epi[case,2]
+N <- epi[case,3]
+
+
+print(case)
+
+obs <- get_data_median(case)
+
+library(MCMCpack)
+
+
+#this should be a decent production-level length
+burn<-3000
+runlength<-5000
+
+
+if(run_type == "test"){
+#use these lines for shorter tests when setting up changes...saves a bit of time
+burn<-000
+runlength<-500
+}
+
+
+set.seed(42) #reproducibility!
+
+
+obs_save <- obs
+
+num_obs <- length(obs_save[,2])
+
+
+#vals <- c(48,24,0) #
+vals <- c("2020-03-22","2020-03-29","2020-04-05","2020-04-12","2020-04-19","2020-04-26","2020-05-03","2020-05-10",0) #
+
+for (k in vals){
+#k <- 0
+obs_extra <- NULL
+obs=obs_save
+
+if(k>0){
+obs_extra <- tail(obs_save,(num_obs-which(as.Date(obs_save[,1],origin=startdate)==k)))
+obs=head(obs_save,which(as.Date(obs_save[,1],origin=startdate)==k))
+}
+
+
+theta.start <- c(4,2,-17,0.007,3,1.)
+
+post.samp <- MCMCmetrop1R(modelcost, theta.init=theta.start,#par_pri,
+                          obs=obs,thin=1, mcmc=runlength, burnin=burn,
+                                  verbose=500, logfun=TRUE)
+
+
+r0_mean <- mean(post.samp[,5])
+r0_sd <- sd(post.samp[,5])
+rt_mean <- mean(post.samp[,6])
+rt_sd <- sd(post.samp[,6])
+  
+    print(c(rt_mean,rt_mean-1.96*rt_sd,rt_mean+1.96*rt_sd))
+
+
+#nb using median, 2.5 and 97.5 centiles for rt
+nsamp <- length(post.samp[,6])
+rts <- sort(post.samp[,6])
+
+    if(k>0){
+saved <- rbind(saved,data.frame(case=case,date=as.Date(k,origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+} else {
+saved <- rbind(saved,data.frame(case=case,date=as.Date(tail(obs[,1],1),origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+}
+  
+    
+analyse_ensemble(post.samp)
+run.obj <- run_ensemble(post.samp,500,120)
+#plot_result(run.obj,obs,post.samp,case,obs_extra,interventiondate,range=c(2,30))
+plot_result(run.obj,obs,post.samp,case,obs_extra,range=c(10,120))#,p.ylim=c(0.5,1500),p.labels=c("1","2","10","20","100","200","1000"),p.at=c(1,2,10,20,100,200,1000)
+
+
+#plot_result(run.obj,obs,post.samp,case,obs_extra)
+}
+
+
+```
+
+
+```{r runmonte-Italy-median, eval=T,include=F}
+
+#This is the  bit that actually does the work...calls the mcmc routine
+
+
+case <- "Italy"
+
+startdate <- epi[case,1]
+interventiondate <- epi[case,2]
+N <- epi[case,3]
+
+
+print(case)
+
+obs <- get_data_median(case)
+
+library(MCMCpack)
+
+
+#this should be a decent production-level length
+burn<-3000
+runlength<-5000
+
+
+if(run_type == "test"){
+#use these lines for shorter tests when setting up changes...saves a bit of time
+burn<-000
+runlength<-500
+}
+
+
+set.seed(42) #reproducibility!
+
+
+obs_save <- obs
+
+num_obs <- length(obs_save[,2])
+
+
+vals <- c("2020-03-15","2020-03-22","2020-03-29","2020-04-05","2020-04-12","2020-04-19","2020-04-26","2020-05-03","2020-05-10",0) #
+
+for (k in vals){
+#k <- 0
+obs_extra <- NULL
+obs=obs_save
+
+if(k>0){
+obs_extra <- tail(obs_save,(num_obs-which(as.Date(obs_save[,1],origin=startdate)==k)))
+obs=head(obs_save,which(as.Date(obs_save[,1],origin=startdate)==k))
+}
+
+
+theta.start <- c(4,2,-17,0.007,3,1.)
+
+post.samp <- MCMCmetrop1R(modelcost, theta.init=theta.start,#par_pri,
+                          obs=obs,thin=1, mcmc=runlength, burnin=burn,
+                                  verbose=500, logfun=TRUE)
+
+
+r0_mean <- mean(post.samp[,5])
+r0_sd <- sd(post.samp[,5])
+rt_mean <- mean(post.samp[,6])
+rt_sd <- sd(post.samp[,6])
+  
+    print(c(rt_mean,rt_mean-1.96*rt_sd,rt_mean+1.96*rt_sd))
+
+#nb using median, 2.5 and 97.5 centiles for rt
+nsamp <- length(post.samp[,6])
+rts <- sort(post.samp[,6])
+
+    if(k>0){
+saved <- rbind(saved,data.frame(case=case,date=as.Date(k,origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+} else {
+saved <- rbind(saved,data.frame(case=case,date=as.Date(tail(obs[,1],1),origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+}
+    
+
+analyse_ensemble(post.samp)
+run.obj <- run_ensemble(post.samp,500,200)
+#plot_result(run.obj,obs,post.samp,case,obs_extra,interventiondate,range=c(2,30))
+plot_result(run.obj,obs,post.samp,case,obs_extra,range=c(20,130),p.ylim=c(0.5,3000),p.labels=c("1","2","10","20","100","200","1000","2000"),p.at=c(1,2,10,20,100,200,1000,2000))
+
+
+#plot_result(run.obj,obs,post.samp,case,obs_extra)
+}
+
+
+```
+
+
+```{r weekly_smoother}
+
+#performs a very simple weekly smoothing on a vector
+
+weekly_smoother <- function(vec){
+  
+
+  print(vec)
+newvec <- vec
+weekly <- rep(0,7)
+
+for (i in 1:7){
+  dy <- 0:((length(vec)-i)/7)
+
+  
+weekly[i+1] <- mean(vec[dy*7+i])
+
+}
+
+for (i in 1:7){
+  dy <- 0:((length(vec)-i)/7)
+
+newvec[dy*7+i] <- (vec[dy*7+i]) * mean(weekly)/weekly[i+1]
+
+
+}
+
+#make sure same total
+
+newvec <- newvec*sum(vec)/sum(newvec)
+
+print(newvec)
+return(newvec)
+}
+
+```
+
+
+```{r runmonte-UK-median_all, eval=T,include=T}
+
+#This is the  bit that actually does the work...calls the mcmc routine
+
+
+case <- "UK_all_rep"
+
+startdate <- epi[case,1]
+interventiondate <- epi[case,2]
+N <- epi[case,3]
+
+
+print(case)
+
+obs <- get_data_median(case)
+
+obs[,2] <- weekly_smoother(obs[,2])
+    
+    
+obs_save <- obs
+
+
+library(MCMCpack)
+
+
+#this should be a decent production-level length
+burn<-3000
+runlength<-5000
+
+
+if(run_type == "test"){
+#use these lines for shorter tests when setting up changes...saves a bit of time
+burn<-000
+runlength<-500
+}
+
+
+set.seed(42) #reproducibility!
+
+
+obs_save <- obs
+
+num_obs <- length(obs_save[,2])
+
+
+vals <- c("2020-03-29","2020-04-05","2020-04-12","2020-04-19","2020-04-26","2020-05-03","2020-05-10",0) #
+
+for (k in vals){
+#k <- 0
+obs_extra <- NULL
+obs=obs_save
+
+if(k>0){
+obs_extra <- tail(obs_save,(num_obs-which(as.Date(obs_save[,1],origin=startdate)==k)))
+obs=head(obs_save,which(as.Date(obs_save[,1],origin=startdate)==k))
+}
+
+
+theta.start <- c(4,2,-17,0.007,3,1.)
+
+post.samp <- MCMCmetrop1R(modelcost, theta.init=par_pri,
+                          obs=obs,thin=1, mcmc=runlength, burnin=burn,
+                                  verbose=500, logfun=TRUE)
+
+
+r0_mean <- mean(post.samp[,5])
+r0_sd <- sd(post.samp[,5])
+rt_mean <- mean(post.samp[,6])
+rt_sd <- sd(post.samp[,6])
+  
+    print(c(rt_mean,rt_mean-1.96*rt_sd,rt_mean+1.96*rt_sd))
+
+#nb using median, 2.5 and 97.5 centiles for rt
+nsamp <- length(post.samp[,6])
+rts <- sort(post.samp[,6])
+
+    if(k>0){
+saved <- rbind(saved,data.frame(case=case,date=as.Date(k,origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+} else {
+saved <- rbind(saved,data.frame(case=case,date=as.Date(tail(obs[,1],1),origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+}
+  
+    
+analyse_ensemble(post.samp)
+run.obj <- run_ensemble(post.samp,500,200)
+#plot_result(run.obj,obs,post.samp,case,obs_extra,interventiondate,range=c(2,30))
+plot_result(run.obj,obs,post.samp,case,obs_extra,range=c(20,130),p.ylim=c(0.5,3000),p.labels=c("1","2","10","20","100","200","1000","2000"),p.at=c(1,2,10,20,100,200,1000,2000))
+
+
+#plot_result(run.obj,obs,post.samp,case,obs_extra)
+}
+
+print(saved)
+
+```
+
+
+```{r runmonte-UK-median, eval=T,include=T}
+
+#This is the  bit that actually does the work...calls the mcmc routine
+
+
+case <- "UK"
+
+startdate <- epi[case,1]
+interventiondate <- epi[case,2]
+N <- epi[case,3]
+
+
+print(case)
+
+obs <- get_data_median(case)
+
+library(MCMCpack)
+
+
+#this should be a decent production-level length
+burn<-3000
+runlength<-5000
+
+
+if(run_type == "test"){
+#use these lines for shorter tests when setting up changes...saves a bit of time
+burn<-000
+runlength<-500
+}
+
+
+set.seed(42) #reproducibility!
+
+
+obs_save <- obs
+
+num_obs <- length(obs_save[,2])
+
+
+
+vals <- c("2020-03-29","2020-04-05","2020-04-12","2020-04-19","2020-04-26") #
+
+for (k in vals){
+#k <- 0
+obs_extra <- NULL
+obs=obs_save
+
+if(k>0){
+obs_extra <- tail(obs_save,(num_obs-which(as.Date(obs_save[,1],origin=startdate)==k)))
+obs=head(obs_save,which(as.Date(obs_save[,1],origin=startdate)==k))
+}
+
+
+theta.start <- c(4,2,-17,0.007,3,1.)
+
+post.samp <- MCMCmetrop1R(modelcost, theta.init=theta.start,#par_pri,
+                          obs=obs,thin=1, mcmc=runlength, burnin=burn,
+                                  verbose=500, logfun=TRUE)
+
+
+r0_mean <- mean(post.samp[,5])
+r0_sd <- sd(post.samp[,5])
+rt_mean <- mean(post.samp[,6])
+rt_sd <- sd(post.samp[,6])
+  
+    print(c(rt_mean,rt_mean-1.96*rt_sd,rt_mean+1.96*rt_sd))
+
+#nb using median, 2.5 and 97.5 centiles for rt
+nsamp <- length(post.samp[,6])
+rts <- sort(post.samp[,6])
+
+    if(k>0){
+saved <- rbind(saved,data.frame(case=case,date=as.Date(k,origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+} else {
+saved <- rbind(saved,data.frame(case=case,date=as.Date(tail(obs[,1],1),origin=startdate),rt_mean=rts[nsamp/2],rt_2.5=rts[nsamp/40],rt_97.5 = rts[(nsamp*39)/40]))    
+}
+  
+    
+analyse_ensemble(post.samp)
+run.obj <- run_ensemble(post.samp,500,200)
+#plot_result(run.obj,obs,post.samp,case,obs_extra,interventiondate,range=c(2,30))
+plot_result(run.obj,obs,post.samp,case,obs_extra,range=c(20,130),p.ylim=c(0.5,3000),p.labels=c("1","2","10","20","100","200","1000","2000"),p.at=c(1,2,10,20,100,200,1000,2000))
+
+
+#plot_result(run.obj,obs,post.samp,case,obs_extra)
+}
+
+print(saved)
+
+```
+
+
+
+```{r read_MRC,eval=T}
+
+#also save my results if I want...be careful to comment out if nec
+
+write.table(saved,file="data/all_fitted.txt",append=T) #make sure not to delete accidentally
+
+saved <- read.table(file="data/all_fitted.txt")
+
+
+mrc.table <- data.frame(row.names = "dummy",case = "dummy",date = as.Date("2020-1-1"),rt_mean=0.0,rt_2.5=0,rt_97.5=0)
+
+
+dat <- read.table('data/MRC_IC.txt',sep = "\t",skip=2,fill=T)
+
+for (i in 1:length(dat[,1])){
+
+  case_m <- dat[i,1]
+  
+  if(case_m == "United Kingdom") case_m <- "UK"
+date_m <- as.Date(dat[i,2],format="%d-%m-%Y")  
+  
+r <- strsplit(as.character(dat[i,5]),"\\(")
+
+r_m <- as.numeric(r[[1]][[1]])
+
+rang <- strsplit(r[[1]][[2]],"-")
+
+r2.5_m <- as.numeric(rang[[1]][[1]])
+
+r97.5 <- strsplit(rang[[1]][[2]],"\\)")
+
+r97.5_m <- as.numeric(r97.5)
+
+#print(case_m)
+#print(date_m)
+#print(c(r_m,r2.5_m,r97.5_m))
+
+
+mrc.table <- rbind(mrc.table,data.frame(case=case_m,date=date_m,rt_mean=r_m,rt_2.5=r2.5_m,rt_97.5=r97.5_m))   
+
+
+}
+```
+
+
+```{r plot_rt_parts, eval=T}
+#to plot the results saved in the data frame "saved"
+
+
+
+old.par <- par(cex=1.2)
+
+
+
+cases = c("UK","UK_all_rep","Italy","Spain","France","Hubei")
+cols = c("red","blue","green","cyan","brown")
+
+
+titles <- c("UK Hospital deaths","UK all reported deaths","Italy","Spain","France","Hubei")
+lens <- c(60,60,70,65,60,80)
+for (i in 1:6){
+
+#UK case
+  
+  len <- lens[i]
+
+    
+plot(1:len,1:len,ylim=c(-0.5,4.),#paste("Rt estimate in",cases[i],"after lockdown"),
+     xlab="Days after lockdown",ylab="Rt",ty="n",yaxt="n")#,main=titles[i]
+axis(2,labels=c(0,0.5,1,1.5,2,3,4),at=c(0,0.5,1,1.5,2,3,4))
+abline(h=1)
+
+cs <- cases[i]  
+  sub <- saved[which(saved$case == cs),]
+  
+ print(cs) 
+ print(sub)
+
+ text(lens[i]/2,3.5,titles[i],cex=1.3)
+  
+      polygon(c(c(-10,90),c(90,-10)),c(c(tail(sub$rt_2.5,1),tail(sub$rt_2.5,1)),c(tail(sub$rt_97.5,1),tail(sub$rt_97.5,1))),col=rgb(red=0,green=0,blue=1,alpha=0.2),border=NA)
+   
+    abline(h=tail(sub$rt_mean,1),col="blue",lwd=2)
+  
+  
+    
+       
+
+    mrc <- mrc.table[which(mrc.table$case == (strsplit(cs,split="_")[[1]][1])),]
+
+    print(mrc)
+    mrc <- mrc[which(mrc$date - epi[cs,]$interventiondate > 5),]
+ print(mrc) 
+    if(length(mrc$date>1)){
+
+      
+          abline(h=tail(mrc$rt_mean,1),col="red",lwd=2)
+
+
+    #now do the plumes
+    
+    polygon(c(c(-10,90),c(90,-10)),c(c(tail(mrc$rt_2.5,1),tail(mrc$rt_2.5,1)),c(tail(mrc$rt_97.5,1),tail(mrc$rt_97.5,1))),col=rgb(red=1,green=0,blue=0,alpha=0.2),border=NA)
+
+          
+#  print(mrc)
+   points(as.numeric(mrc$date-epi[cs,]$interventiondate-0.5),mrc$rt_mean,col="red",pch=19,cex=1.5)
+  arrows(as.numeric(mrc$date-epi[cs,]$interventiondate-0.5),mrc$rt_2.5,as.numeric(mrc$date-epi[cs,]$interventiondate-0.5),mrc$rt_97.5,angle=90,code=3,length=0.,col = "red",lwd=5)
+  
+  
+    
+    
+    } 
+    
+  
+ 
+  points(as.numeric(as.Date(sub$date)-epi[cs,]$interventiondate),sub$rt_mean,col="blue",pch=19,cex=1.5)
+  arrows(as.numeric(as.Date(sub$date)-epi[cs,]$interventiondate),sub$rt_2.5,as.numeric(as.Date(sub$date)-epi[cs,]$interventiondate),sub$rt_97.5,angle=90,code=3,length=0.,col ="blue",lwd=5)
+  
+    
+    
+}
+
+
+
+par <- old.par
+ 
+
+
+
+
+
+```
+
