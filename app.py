@@ -4,8 +4,8 @@
 #-----------------------------------------------------------------------
 # PROGRAM: app.py
 #-----------------------------------------------------------------------
-# Version 0.6
-# 8 June, 2020
+# Version 0.7
+# 7 July, 2020
 # Dr Michael Taylor
 # https://patternizer.github.io
 # patternizer AT gmail DOT com
@@ -137,7 +137,7 @@ def update_status(dp,dl,df,value):
                        'raw': raw_pad})    
 
 #   dt['daily'] = smoother(dt.raw).astype('int')                    # Regularisation (James Annan)
-#   dt['daily'] = dt.raw.rolling(7).mean().fillna(0).astype('int')  # Pandas rolling mean
+#    dt['daily'] = dt.raw.rolling(7).mean().fillna(0).astype('int')  # Pandas rolling mean
     dt['daily'] = dt.raw.iloc[:].ewm(span=3,adjust=False).mean()    # Exponential weighted mean (3)
     dt['cumulative'] = dt['daily'].cumsum()    
     dt['raw_cumulative'] = dt['raw'].cumsum()    
@@ -154,10 +154,7 @@ def update_status(dp,dl,df,value):
 # LOAD GLOBAL POPULATION DATA
 #----------------------------
 """
-Country level data from the World Bank:
-https://data.worldbank.org/indicator/SP.POP.TOTL
-
-Extract latest population census value per Country Code
+Extract latest population census value per Country Code from public dataset
 """
 
 url = r'https://raw.githubusercontent.com/datasets/population/master/data/population.csv'
@@ -175,9 +172,8 @@ dp['Value'] = [ df[df['Country Code']==countries[i]]['Value'].tail(1).values[0] 
 # LOAD GLOBAL LOCKDOWN STATUS
 #----------------------------
 """
-Daily updated Coronavirus containment measures taken by governments from 2020-01-23 to date
-Provided by Olivier Lejeune: http://www.olejeune.com/ at:
-https://github.com/OlivierLej/Coronavirus_CounterMeasures
+Daily updated Coronavirus containment status from 2020-01-23 to date made publicly available at:
+https://raw.githubusercontent.com/OlivierLej/Coronavirus_CounterMeasures/master/dataset.csv
 dataset.csv has structure: country_id, country_name, 20200123_date, ...  
 
 countermeasures = {
@@ -199,7 +195,6 @@ countries = df['country_name'].unique()
 dl = pd.DataFrame(columns = ['country_id', 'country_name', 'intervention', 'date'])
 dl['country_id'] = [ df[df['country_name']==countries[i]]['country_id'].tail(1).values[0] for i in range(len(countries)) ] 
 dl['country_name'] = [ df[df['country_name']==countries[i]]['country_name'].tail(1).values[0] for i in range(len(countries)) ] 
-#dl[dl['country_name']=='United States']['country_id'].values[0] == 'NY'
 for i in range(len(countries)-1):
     if i  == 182:
         m = df[df['country_id']=='TX'].T[2:]
@@ -227,7 +222,7 @@ https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_d
 """
 
 url = r'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv'
-#Index(['Province/State', 'Country/Region', 'Lat', 'Long', '1/22/20', 
+# 'Province/State', 'Country/Region', 'Lat', 'Long', '1/22/20' 
 df = pd.read_csv(url)
 df.to_csv('dataset_dailydeaths.csv', sep=',', index=False, header=False, encoding='utf-8')
 countries = df['Country/Region'].unique()
@@ -246,7 +241,7 @@ app.config.suppress_callback_exceptions = True
 
 app.layout = html.Div(children=[
 
-    html.H1(children='Coronavirus Operational Forecast',
+    html.H1(children='Coronavirus MCMC Hindcast/Forecast Model',
         style={'padding' : '10px', 'width': '100%', 'display': 'inline-block'},
     ),
             
@@ -256,7 +251,6 @@ app.layout = html.Div(children=[
             id = 'input',
             options = dropdown_countries,   
             value = 'United Kingdom',
-#            value = 'US',
             style = {'padding' : '10px', 'width': '240px', 'fontSize' : '20px', 'display': 'inline-block'}
         ),    
     ],
@@ -271,11 +265,9 @@ app.layout = html.Div(children=[
             ],
             style = {'padding' : '10px', 'display': 'inline-block'}),                
  
-            html.Label(['Source of population data: ', html.A('World Bank', href='https://raw.githubusercontent.com/datasets/population/master/data/population.csv')]),               
-            html.Label(['Source of daily loss data: ', html.A('CSSE at Johns Hopkins University', href='https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv')]),               
-            html.Label(['Source of intervention data: ', html.A('Olivier Lejeune', href='https://raw.githubusercontent.com/OlivierLej/Coronavirus_CounterMeasures/master/dataset.csv')]),   
-            html.Br(),            
-            html.Label([html.A('Global Coronavirus lockdown status app', href='https://patternizer-covid19.herokuapp.com/'), ' by Michael Taylor']),                       
+            html.Label(['Source: ', html.A('Population data', href='https://raw.githubusercontent.com/datasets/population/master/data/population.csv')]),               
+            html.Label(['Source: ', html.A('CSSE at Johns Hopkins University', href='https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv')]),               
+            html.Label(['Source: ', html.A('Intervention data', href='https://raw.githubusercontent.com/OlivierLej/Coronavirus_CounterMeasures/master/dataset.csv')]),   
         ],
         style = {'padding' : '10px', 'display': 'inline-block'}),                
             
@@ -284,11 +276,12 @@ app.layout = html.Div(children=[
             dbc.Button('Run Forecast', id='button', color="info", className="mr-1"),
             html.Div(id='container-button'),
             html.Br(),
-            html.Label(['Hindcast/forecast model ', html.A('R code', href='https://github.com/jdannan/COVID-19-operational-forecast'), ' by James D. Annan and Julia C. Hargreaves']),
-            html.Label(['medRxiv preprint: ', html.A('Model calibration, nowcasting, and operational prediction of the COVID-19 pandemic', 
-                                                     href='https://doi.org/10.1101/2020.04.14.20065227'), ', James D. Annan and Julia C. Hargreaves (2020)']),
+            html.Label('Simulation study case: UK using 3-day EWA data smoothing:'),           
             html.Br(),
-            html.Label(['App created by ', html.A('Michael Taylor', href='https://patternizer.github.io'),' in Plotly Dash Python']),                    
+            html.Label(['Hindcast/forecast model ', html.A('R code ', href='https://github.com/jdannan/COVID-19-operational-forecast'), ' by James D. Annan and Julia C. Hargreaves']),
+            html.Label(['medRxiv preprint: ', html.A('Model calibration, nowcasting, and operational prediction of the COVID-19 pandemic', href='https://doi.org/10.1101/2020.04.14.20065227'), ', James D. Annan and Julia C. Hargreaves (2020)']),
+            html.Br(),
+            html.Label(['App created by ', html.A('Michael Taylor', href='https://patternizer.github.io'),' in Plotly Dash Python (no longer maintained)']),                    
         ],
         style = {'padding' : '10px', 'display': 'inline-block'}),
     ],
@@ -300,7 +293,7 @@ app.layout = html.Div(children=[
         html.P([html.H3(children='Country Status: Daily')],
             style = {'padding' : '10px', 'display': 'inline-block'}),
             dcc.Graph(id='input-graph', style = {'width': '85%'}),
-        html.P([html.H3(children='Country Forecast: Daily')],
+        html.P([html.H3(children='Hindcast/forecast: Daily')],
             style = {'padding' : '10px', 'display': 'inline-block'}),
             dcc.Graph(id='output-graph', style = {'width': '85%'}),
     ],    
@@ -312,7 +305,7 @@ app.layout = html.Div(children=[
         html.P([html.H3(children='Country Status: Cumulative')],
             style = {'padding' : '10px', 'display': 'inline-block'}),
             dcc.Graph(id='input-graph2', style = {'width': '85%'}),
-        html.P([html.H3(children='Country Forecast: Cumulative')],
+        html.P([html.H3(children='Hindcast/forecast: Cumulative')],
             style = {'padding' : '10px', 'display': 'inline-block'}),
             dcc.Graph(id='output-graph2', style = {'width': '85%'}),
     ],    
