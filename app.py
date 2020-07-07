@@ -602,10 +602,10 @@ def update_forecast_button(n_clicks, value):
     dt.to_csv(fileout, index=False)
 
     if n_clicks == 1:
-#        filepath = pathlib.Path(__file__).resolve().parent        
-#        R_str = pathlib.Path(filepath, "covid-19_mcmc_prediction_public_executable").with_suffix(".R")        
-#        subprocess.call(['Rscript', '--vanilla', 'R_str'])
-        subprocess.call("C:\\Program Files\\R\\R-3.6.3\\bin\\Rscript --vanilla C:\\Users\\User\\Desktop\\REPOS\\COVID-19-operational-forecast\\GITHUB\\covid-19_mcmc_prediction_public_executable.R")
+        filepath = pathlib.Path(__file__).resolve().parent        
+        R_str = pathlib.Path(filepath, "covid-19_mcmc_prediction_public_executable").with_suffix(".R")        
+        subprocess.call(['Rscript', '--vanilla', 'R_str'])
+#        subprocess.call("C:\\Program Files\\R\\R-3.6.3\\bin\\Rscript --vanilla C:\\Users\\User\\Desktop\\REPOS\\COVID-19-operational-forecast\\GITHUB\\covid-19_mcmc_prediction_public_executable.R")
         return    
     else:    
         n_clicks = 0
@@ -636,7 +636,6 @@ def update_output_graph(n_clicks, value):
         #-----------------------------------------
 
         filepath = pathlib.Path(__file__).resolve().parent        
-
         countrystr = value.replace(" ", "_").lower() + '_'
         fileout_post_samp = countrystr + 'post_samp'
         fileout_obs = countrystr + 'obs'
@@ -872,7 +871,6 @@ def update_output_graph2(n_clicks, value):
         #-----------------------------------------
 
         filepath = pathlib.Path(__file__).resolve().parent        
-
         countrystr = value.replace(" ", "_").lower() + '_'
         fileout_post_samp = countrystr + 'post_samp'
         fileout_obs = countrystr + 'obs'
